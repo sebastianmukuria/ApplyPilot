@@ -150,7 +150,10 @@ def parse_entries(text: str) -> list[dict]:
 # ── HTML Template ────────────────────────────────────────────────────────
 
 def build_html(resume: dict) -> str:
-    """Build professional resume HTML from parsed data.
+    """Build resume HTML in a classic serif style (black/white, ruled headers).
+
+    Company/role entries render as a bold company line with a right-aligned date
+    and an italic role line, matching a traditional one-column resume layout.
 
     Args:
         resume: Parsed resume dict from parse_resume().
@@ -158,176 +161,105 @@ def build_html(resume: dict) -> str:
     Returns:
         Complete HTML string ready for PDF rendering.
     """
+    import html as _html
+
+    def esc(s: str) -> str:
+        return _html.escape(str(s))
+
     sections = resume["sections"]
 
-    # Skills
-    skills_html = ""
-    if "TECHNICAL SKILLS" in sections:
-        skills = parse_skills(sections["TECHNICAL SKILLS"])
-        rows = ""
-        for cat, val in skills:
-            rows += f'<div class="skill-row"><span class="skill-cat">{cat}:</span> {val}</div>\n'
-        skills_html = f'<div class="section"><div class="section-title">Technical Skills</div>{rows}</div>'
-
-    # Experience
-    exp_html = ""
-    if "EXPERIENCE" in sections:
-        entries = parse_entries(sections["EXPERIENCE"])
+    def entries_html(section_key: str, label: str) -> str:
+        if section_key not in sections:
+            return ""
         items = ""
-        for e in entries:
-            bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
-            subtitle = f'<div class="entry-subtitle">{e["subtitle"]}</div>' if e["subtitle"] else ""
-            items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}<ul>{bullets}</ul></div>'
-        exp_html = f'<div class="section"><div class="section-title">Experience</div>{items}</div>'
+        for e in parse_entries(sections[section_key]):
+            title = (e["title"] or "").strip()
+            subtitle = (e["subtitle"] or "").strip()
+            # The right-aligned slot is the dates: take the last "|"-segment so a
+            # leading label (e.g. "Tech | Dec 2022 - Present") is dropped.
+            right = esc([p.strip() for p in subtitle.split("|")][-1]) if subtitle else ""
+            bullets = "".join(f"<li>{esc(b)}</li>" for b in e["bullets"])
+            if " at " in title:
+                role, company = title.split(" at ", 1)
+                head = (f'<div class="row"><span class="l">{esc(company.strip())}</span>'
+                        f'<span class="r">{right}</span></div>'
+                        f'<div class="row sub"><span class="l">{esc(role.strip())}</span>'
+                        f'<span class="r"></span></div>')
+            else:
+                head = (f'<div class="row"><span class="l">{esc(title)}</span>'
+                        f'<span class="r">{right}</span></div>')
+            items += f'<div class="entry">{head}<ul>{bullets}</ul></div>'
+        return f'<div class="section">{label}</div>{items}'
 
-    # Projects
-    proj_html = ""
-    if "PROJECTS" in sections:
-        entries = parse_entries(sections["PROJECTS"])
-        items = ""
-        for e in entries:
-            bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
-            subtitle = f'<div class="entry-subtitle">{e["subtitle"]}</div>' if e["subtitle"] else ""
-            items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}<ul>{bullets}</ul></div>'
-        proj_html = f'<div class="section"><div class="section-title">Projects</div>{items}</div>'
-
-    # Education
-    edu_html = ""
-    if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
-
-    # Summary
     summary_html = ""
     if "SUMMARY" in sections:
-        summary_html = f'<div class="section"><div class="section-title">Summary</div><div class="summary">{sections["SUMMARY"].strip()}</div></div>'
+        summary_html = f'<div class="section">Summary</div><div class="summary">{esc(sections["SUMMARY"].strip())}</div>'
 
-    # Contact line parsing
+    def fix_caps(label: str) -> str:
+        # Restore acronym casing the LLM may have title-cased (Bi -> BI, Llm -> LLM).
+        acro = {"bi", "ai", "llm", "ml", "qa", "sql", "api", "apis", "ci/cd", "rss", "mcp",
+                "etl", "kpi", "kpis", "ux", "ui", "aws", "gcp"}
+        return " ".join(w.upper() if w.lower() in acro else w for w in label.split())
+
+    skills_html = ""
+    if "TECHNICAL SKILLS" in sections:
+        rows = "".join(
+            f'<div class="skill"><span class="cat">{esc(fix_caps(cat))}:</span> {esc(val)}</div>'
+            for cat, val in parse_skills(sections["TECHNICAL SKILLS"])
+        )
+        skills_html = f'<div class="section">Skills</div>{rows}'
+
+    edu_html = ""
+    if "EDUCATION" in sections:
+        edu = esc(sections["EDUCATION"].strip()).replace("\n", "<br>")
+        edu_html = f'<div class="section">Education</div><div class="edu">{edu}</div>'
+
+    exp_html = entries_html("EXPERIENCE", "Work Experience")
+    proj_html = entries_html("PROJECTS", "Projects")
+
+    def linkify(part: str) -> str:
+        p = part.strip()
+        # Linkify domains/URLs (website, github) but never the email or phone.
+        if "@" not in p and (p.startswith("http") or re.match(r"^[\w.-]+\.(com|io|dev|ai|org|net)(/.*)?$", p)):
+            href = p if p.startswith("http") else "https://" + p
+            return f'<a href="{esc(href)}" style="color:#000;text-decoration:none;">{esc(p)}</a>'
+        return esc(p)
+
     contact = resume["contact"]
-    contact_parts = [p.strip() for p in contact.split("|")] if contact else []
-    contact_html = " &nbsp;|&nbsp; ".join(contact_parts)
-
-    # Location line (may be empty)
-    location_html = f'<div class="location">{resume["location"]}</div>' if resume["location"] else ""
+    contact_html = " &nbsp;|&nbsp; ".join(linkify(p) for p in contact.split("|")) if contact else ""
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
-@page {{
-    size: letter;
-    margin: 0.35in 0.5in;
-}}
-* {{
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}}
-body {{
-    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
-    font-size: 10pt;
-    line-height: 1.35;
-    color: #1a1a1a;
-}}
-.header {{
-    text-align: center;
-    margin-bottom: 4px;
-    padding-bottom: 4px;
-    border-bottom: 1.5px solid #2a7ab5;
-}}
-.name {{
-    font-size: 18pt;
-    font-weight: 700;
-    color: #1a3a5c;
-    letter-spacing: 0.5px;
-}}
-.title {{
-    font-size: 10.5pt;
-    color: #3a6b8c;
-    margin: 1px 0;
-}}
-.location {{
-    font-size: 9pt;
-    color: #555;
-}}
-.contact {{
-    font-size: 9pt;
-    color: #444;
-    margin-top: 1px;
-}}
-.contact a {{
-    color: #2c3e50;
-    text-decoration: none;
-}}
-.section {{
-    margin-top: 5px;
-}}
-.section-title {{
-    font-size: 10pt;
-    font-weight: 700;
-    color: #1a3a5c;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    border-bottom: 1.5px solid #2a7ab5;
-    padding-bottom: 1px;
-    margin-bottom: 3px;
-}}
-.summary {{
-    font-size: 9.5pt;
-    color: #333;
-    line-height: 1.4;
-}}
-.skill-row {{
-    font-size: 9.5pt;
-    margin: 0;
-    line-height: 1.35;
-}}
-.skill-cat {{
-    font-weight: 600;
-    color: #1a3a5c;
-}}
-.entry {{
-    margin-bottom: 4px;
-    break-inside: avoid;
-}}
-.entry-title {{
-    font-weight: 600;
-    font-size: 10pt;
-    color: #1a3a5c;
-}}
-.entry-subtitle {{
-    font-size: 9pt;
-    color: #4a7a9b;
-    font-style: italic;
-    margin-bottom: 1px;
-}}
-ul {{
-    margin-left: 14px;
-    padding: 0;
-}}
-li {{
-    font-size: 9.5pt;
-    margin-bottom: 1px;
-    line-height: 1.35;
-}}
-.edu {{
-    font-size: 10pt;
-}}
+* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+body {{ font-family: 'Times New Roman', Georgia, serif; font-size: 10.5pt; line-height: 1.32; color: #000; }}
+.name {{ font-size: 22pt; font-weight: 700; letter-spacing: 0.3px; }}
+.contact {{ font-size: 10pt; margin: 3px 0 6px; }}
+.section {{ font-size: 11pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+           border-bottom: 1px solid #000; padding-bottom: 2px; margin: 13px 0 6px; }}
+.row {{ display: flex; justify-content: space-between; align-items: baseline; }}
+.row .l {{ font-weight: 700; }}
+.row .r {{ font-weight: 700; }}
+.sub .l, .sub .r {{ font-style: italic; font-weight: 400; }}
+.entry {{ margin-bottom: 9px; break-inside: avoid; }}
+ul {{ margin: 3px 0 0 0; padding-left: 15px; }}
+li {{ margin-bottom: 2.5px; padding-left: 2px; }}
+.summary {{ text-align: justify; }}
+.skill {{ line-height: 1.4; }}
+.skill .cat {{ font-weight: 700; }}
+.edu {{ line-height: 1.4; }}
 </style>
 </head>
 <body>
-<div class="header">
-    <div class="name">{resume['name']}</div>
-    <div class="title">{resume['title']}</div>
-    {location_html}
-    <div class="contact">{contact_html}</div>
-</div>
+<div class="name">{esc(resume['name'])}</div>
+<div class="contact">{contact_html}</div>
 {summary_html}
-{skills_html}
 {exp_html}
 {proj_html}
 {edu_html}
+{skills_html}
 </body>
 </html>"""
 
@@ -350,7 +282,7 @@ def render_pdf(html: str, output_path: str) -> None:
         page.pdf(
             path=output_path,
             format="Letter",
-            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            margin={"top": "0.5in", "right": "0.6in", "bottom": "0.5in", "left": "0.6in"},
             print_background=True,
         )
         browser.close()

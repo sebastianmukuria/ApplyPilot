@@ -12,6 +12,7 @@ to avoid apologetic spirals.
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -264,6 +265,8 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
         contact_parts.append(personal["email"])
     if personal.get("phone"):
         contact_parts.append(personal["phone"])
+    if personal.get("website_url"):
+        contact_parts.append(personal["website_url"])
     if personal.get("github_url"):
         contact_parts.append(personal["github_url"])
     if personal.get("linkedin_url"):
@@ -294,15 +297,17 @@ def assemble_resume_text(data: dict, profile: dict) -> str:
             lines.append(f"- {sanitize_text(b)}")
         lines.append("")
 
-    # Projects
-    lines.append("PROJECTS")
-    for entry in data.get("projects", []):
-        lines.append(sanitize_text(entry.get("header", "")))
-        if entry.get("subtitle"):
-            lines.append(sanitize_text(entry["subtitle"]))
-        for b in entry.get("bullets", []):
-            lines.append(f"- {sanitize_text(b)}")
-        lines.append("")
+    # Projects -- set APPLYPILOT_OMIT_PROJECTS=1 to drop the section from the
+    # rendered resume (the LLM still generates data["projects"] either way)
+    if os.environ.get("APPLYPILOT_OMIT_PROJECTS", "0") != "1":
+        lines.append("PROJECTS")
+        for entry in data.get("projects", []):
+            lines.append(sanitize_text(entry.get("header", "")))
+            if entry.get("subtitle"):
+                lines.append(sanitize_text(entry["subtitle"]))
+            for b in entry.get("bullets", []):
+                lines.append(f"- {sanitize_text(b)}")
+            lines.append("")
 
     # Education
     lines.append("EDUCATION")
@@ -490,6 +495,36 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     if not jobs:
         log.info("No untailored jobs with score >= %d.", min_score)
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
+
+    # Fixed-resume mode (APPLYPILOT_FIXED_RESUME=1): skip LLM resume generation
+    # entirely and point every job at the hand-picked master resume
+    # (~/.applypilot/master_resume.pdf, with master_resume.txt as its text
+    # sibling). Cover letters are still generated per job by the cover step.
+    if os.environ.get("APPLYPILOT_FIXED_RESUME", "0") == "1":
+        master_txt = RESUME_PATH.parent / "master_resume.txt"
+        master_pdf = master_txt.with_suffix(".pdf")
+        if not master_pdf.exists():
+            log.error("Fixed-resume mode is on (APPLYPILOT_FIXED_RESUME=1) but %s does not "
+                      "exist. Copy the resume PDF you want every application to upload to "
+                      "that exact path, or switch back to per-job tailoring "
+                      "(APPLYPILOT_FIXED_RESUME=0).", master_pdf)
+            return {"approved": 0, "failed": 0, "errors": len(jobs), "elapsed": 0.0}
+        if not master_txt.exists():
+            # The .txt sibling feeds the apply agent's context and GUI previews;
+            # the base resume text is the natural default.
+            master_txt.write_text(RESUME_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            log.info("Created %s from %s.", master_txt, RESUME_PATH)
+        now = datetime.now(timezone.utc).isoformat()
+        for job in jobs:
+            conn.execute(
+                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+                "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                (str(master_txt), now, job["url"]),
+            )
+        conn.commit()
+        log.info("Fixed-resume mode: linked master resume for %d jobs (no LLM tailoring).",
+                 len(jobs))
+        return {"approved": len(jobs), "failed": 0, "errors": 0, "elapsed": 0.0}
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
     log.info("Tailoring resumes for %d jobs (score >= %d)...", len(jobs), min_score)
