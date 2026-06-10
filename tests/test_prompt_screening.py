@@ -46,3 +46,46 @@ def test_screening_section_drops_old_overclaim_instruction():
     # The honest replacement still allows confident YES for listed tools.
     assert "answer YES confidently" in section
     assert "needs_human_answer" in section
+
+
+# ── Salary modes (APPLYPILOT_SALARY_MODE) ─────────────────────────────────
+
+def _salary(monkeypatch, mode=None, fixed=None):
+    from applypilot.apply.prompt import _build_salary_section
+    if mode is None:
+        monkeypatch.delenv("APPLYPILOT_SALARY_MODE", raising=False)
+    else:
+        monkeypatch.setenv("APPLYPILOT_SALARY_MODE", mode)
+    if fixed is None:
+        monkeypatch.delenv("APPLYPILOT_SALARY_FIXED", raising=False)
+    else:
+        monkeypatch.setenv("APPLYPILOT_SALARY_FIXED", fixed)
+    return _build_salary_section(_profile())
+
+
+def test_salary_default_mirrors_posting(monkeypatch):
+    s = _salary(monkeypatch)
+    assert "mirror the posting" in s
+    assert "MIDPOINT" in s
+    assert "$100000" in s  # profile floor only as the no-info fallback
+
+
+def test_salary_blank_mode(monkeypatch):
+    s = _salary(monkeypatch, mode="blank")
+    assert "BLANK" in s
+    assert "Negotiable" in s
+    assert "$100000" in s  # still the required-field fallback
+
+
+def test_salary_fixed_mode_single(monkeypatch):
+    s = _salary(monkeypatch, mode="fixed", fixed="145000")
+    assert "fixed answer" in s
+    assert "$145000" in s
+    assert "Do not adapt it to the posting" in s
+
+
+def test_salary_fixed_mode_range_and_profile_fallback(monkeypatch):
+    s = _salary(monkeypatch, mode="fixed", fixed="140000-160000")
+    assert "$140000-160000" in s
+    s2 = _salary(monkeypatch, mode="fixed", fixed="")
+    assert "$100000" in s2  # falls back to profile expectation

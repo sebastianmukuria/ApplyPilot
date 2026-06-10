@@ -541,9 +541,24 @@ resume_mode = st.sidebar.radio(
 if resume_mode == "Fixed master résumé" and not (APP / "master_resume.pdf").exists():
     st.sidebar.warning("master_resume.pdf not found — copy your résumé PDF to "
                        "~/.applypilot/master_resume.pdf", icon=":material/description:")
+SALARY_MODES = {"Match the posting": "posting", "Leave blank / negotiable": "blank",
+                "Fixed amount": "fixed"}
+_cur_sm = env.get("APPLYPILOT_SALARY_MODE", "posting")
+_sm_label = next((k for k, v in SALARY_MODES.items() if v == _cur_sm), "Match the posting")
+salary_mode = st.sidebar.selectbox(
+    "Salary answers", list(SALARY_MODES), index=list(SALARY_MODES).index(_sm_label),
+    help="How the agent answers salary questions: mirror the posting's own numbers, "
+         "leave fields blank ('Negotiable' where text is required), or always give "
+         "your fixed amount.")
+salary_fixed = env.get("APPLYPILOT_SALARY_FIXED", "")
+if SALARY_MODES[salary_mode] == "fixed":
+    salary_fixed = st.sidebar.text_input("Fixed amount", value=salary_fixed,
+                                         placeholder="e.g. 145000 or 140000-160000")
 if st.sidebar.button("Save run settings", icon=":material/save:"):
     write_env({"APPLYPILOT_SUPERVISED": "1" if supervised else "0",
-               "APPLYPILOT_FIXED_RESUME": "1" if resume_mode == "Fixed master résumé" else "0"})
+               "APPLYPILOT_FIXED_RESUME": "1" if resume_mode == "Fixed master résumé" else "0",
+               "APPLYPILOT_SALARY_MODE": SALARY_MODES[salary_mode],
+               "APPLYPILOT_SALARY_FIXED": salary_fixed.strip()})
     st.sidebar.success("Saved", icon=":material/check:")
 _tg_on = bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID"))
 st.sidebar.markdown(

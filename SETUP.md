@@ -197,6 +197,17 @@ marked `handoff` — confirm with **Mark applied** in the GUI once you've
 submitted. To let the agent review and submit on its own, explicitly set
 `APPLYPILOT_SUPERVISED=0` in `.env`.
 
+### Salary answers
+
+Choose how the agent handles "desired salary" questions (GUI → Run settings →
+*Salary answers*, or `APPLYPILOT_SALARY_MODE` in `.env`):
+
+| Mode | Behavior |
+|---|---|
+| `posting` (default) | Mirror the job posting's own numbers — midpoint of their range for a single figure, their range verbatim for a range. Your profile expectation is only the fallback when the posting lists nothing. |
+| `blank` | Leave salary fields blank / skip optional ones; "Negotiable" where text is required. |
+| `fixed` | Always answer with your chosen figure — set it in the GUI or via `APPLYPILOT_SALARY_FIXED` (e.g. `145000` or `140000-160000`). |
+
 ### Telegram pings (optional)
 
 To get a phone notification when a run needs you:

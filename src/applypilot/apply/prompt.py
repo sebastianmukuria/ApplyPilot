@@ -159,6 +159,34 @@ def _build_salary_section(profile: dict) -> str:
     else:
         convert_line = "Posting is in a different currency? -> Target midpoint of their range. Convert if needed."
 
+    # Strategy is user-selectable (GUI "Salary answers" / .env):
+    #   APPLYPILOT_SALARY_MODE = posting (default) | blank | fixed
+    #   APPLYPILOT_SALARY_FIXED = the figure for fixed mode, e.g. 145000 or 140000-160000
+    mode = os.environ.get("APPLYPILOT_SALARY_MODE", "posting").strip().lower()
+    fixed = os.environ.get("APPLYPILOT_SALARY_FIXED", "").strip().lstrip("$")
+
+    if mode == "blank":
+        return f"""== SALARY (disclose nothing) ==
+Leave salary/compensation fields BLANK whenever the form allows it. Skip optional salary questions entirely.
+1. Free-text salary field? -> "Negotiable".
+2. REQUIRED numeric field that refuses to stay blank? -> use the posting's own number (midpoint of their range). Posting has none -> ${floor} {currency}.
+3. Required range field? -> repeat the posting's range; none posted -> "${range_min}-${range_max} {currency}".
+4. Hourly rate asked? -> Divide the annual answer by 2080. ({hourly_line})
+5. {convert_line}"""
+
+    if mode == "fixed":
+        amount = fixed or floor
+        if "-" in str(amount):
+            range_rule = f"Range question? -> give the chosen range exactly: ${amount} {currency}."
+        else:
+            range_rule = f"Range question? -> ${amount} minus 5% to ${amount} plus 5%."
+        return f"""== SALARY (fixed answer) ==
+Answer EVERY salary question with the candidate's chosen figure: ${amount} {currency}. Do not adapt it to the posting.
+1. Single-number question? -> ${amount} (the midpoint if a range was chosen).
+2. {range_rule}
+3. Hourly rate asked? -> Divide the annual figure by 2080. ({hourly_line})
+4. {convert_line}"""
+
     return f"""== SALARY (mirror the posting) ==
 Default to what THIS job posting says -- the posting's own numbers are the answer.
 
