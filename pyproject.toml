@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1"]
+gui = ["streamlit>=1.58"]
 
 [project.scripts]
 applypilot = "applypilot.cli:app"

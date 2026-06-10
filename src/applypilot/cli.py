@@ -16,6 +16,8 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     datefmt="%H:%M:%S",
 )
+# httpx logs full request URLs at INFO — those can carry API keys / bot tokens
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = typer.Typer(
     name="applypilot",
@@ -330,6 +332,30 @@ def dashboard() -> None:
     from applypilot.view import open_dashboard
 
     open_dashboard()
+
+
+@app.command()
+def gui(
+    port: int = typer.Option(8501, "--port", "-p", help="Port for the control panel."),
+) -> None:
+    """Launch the Streamlit control panel (queue, live runs, stats, answer drafting)."""
+    _bootstrap()
+
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        console.print("[red]Streamlit is not installed.[/red] "
+                      "Install the GUI extra:  pip install 'applypilot[gui]'")
+        raise typer.Exit(1)
+
+    import subprocess
+    import sys
+    from pathlib import Path as _Path
+
+    dash = _Path(__file__).parent / "dashboard.py"
+    console.print(f"[bold]ApplyPilot control panel[/bold] -> http://localhost:{port}")
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(dash),
+                    "--server.port", str(port)])
 
 
 @app.command()
