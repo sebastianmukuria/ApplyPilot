@@ -40,17 +40,44 @@
     "target_role": "software engineer"
   },
   "skills_boundary": {
-    "languages": ["Python", "SQL", "JavaScript"],
-    "frameworks": ["FastAPI", "Flask", "React"],
-    "devops": ["Docker", "AWS", "CI/CD"],
-    "databases": ["PostgreSQL", "MongoDB"],
-    "tools": ["Git", "Linux"]
+    "languages": [
+      "Python",
+      "SQL",
+      "JavaScript"
+    ],
+    "frameworks": [
+      "FastAPI",
+      "Flask",
+      "React"
+    ],
+    "devops": [
+      "Docker",
+      "AWS",
+      "CI/CD"
+    ],
+    "databases": [
+      "PostgreSQL",
+      "MongoDB"
+    ],
+    "tools": [
+      "Git",
+      "Linux"
+    ]
   },
   "resume_facts": {
-    "preserved_companies": ["Company A", "Company B"],
-    "preserved_projects": ["Project X", "Project Y"],
+    "preserved_companies": [
+      "Company A",
+      "Company B"
+    ],
+    "preserved_projects": [
+      "Project X",
+      "Project Y"
+    ],
     "preserved_school": "Your University",
-    "real_metrics": ["50% improvement", "10x faster"]
+    "real_metrics": [
+      "50% improvement",
+      "10x faster"
+    ]
   },
   "eeo_voluntary": {
     "gender": "Decline to self-identify",
@@ -63,5 +90,23 @@
     "consents_to_background_check": true,
     "felony_conviction": false,
     "how_heard": "Online Job Board"
+  },
+  "work_context": {
+    "projects": [
+      {
+        "name": "Realtime Alerting Pipeline (Acme Corp, production)",
+        "what": "Event-classification pipeline that triages incoming webhooks and drafts alert summaries for the on-call team.",
+        "tools": "Python, PostgreSQL, Claude API, Docker",
+        "impact": "Cut alert triage time from 15 minutes to under 1; ~300 alerts/week handled with no added headcount."
+      },
+      {
+        "name": "Self-serve BI Dashboards (Acme Corp)",
+        "what": "Company-wide KPI dashboards replacing ad-hoc spreadsheet reporting.",
+        "tools": "SQL, dbt, Tableau",
+        "impact": "Eliminated ~10 hours/week of manual reporting; adopted by 4 teams."
+      }
+    ],
+    "llm_usage": "Uses Claude and Gemini APIs in production work. Never claim experience with tools not listed here.",
+    "answer_rules": "Each project above is DISTINCT - never merge two projects into one answer, never invent tools or metrics. Pick the single most relevant project per question."
   }
 }

@@ -41,3 +41,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# internal working notes — not for distribution
+IMPLEMENTATION-PLAN.md
+PRE-FLIGHT-REVIEW.md

@@ -41,6 +41,23 @@ applypilot apply --dry-run  # fill forms without submitting
 
 > **Why two install commands?** `python-jobspy` pins an exact numpy version in its metadata that conflicts with pip's resolver, but works fine at runtime with any modern numpy. The `--no-deps` flag bypasses the resolver; the second command installs jobspy's actual runtime dependencies. Everything except `python-jobspy` installs normally.
 
+> **New here?** [SETUP.md](SETUP.md) is the full step-by-step walkthrough — install,
+> config, résumé modes, the control panel, supervised auto-apply, and Telegram pings.
+
+### Control panel
+
+```bash
+pip install "applypilot[gui]"     # from a source checkout: pip install -e ".[gui]"
+applypilot gui
+```
+
+A local Streamlit dashboard: the scored job queue with per-card apply/download
+actions, a live-run panel with "needs you" alerts, stats, and an answer-drafting
+tab grounded in your real projects. Supports two résumé modes — per-job AI
+tailoring, or a **fixed master résumé** (your one chosen PDF uploaded everywhere,
+with only cover letters generated per job). The panel's run/stop process controls
+are macOS/Linux only.
+
 ---
 
 ## Two Paths
@@ -80,7 +97,7 @@ Each stage is independent. Run them all or pick what you need.
 | AI scoring | 1-10 fit score per job | Basic filtering | Your gut feeling |
 | Resume tailoring | Per-job AI rewrite | Template-based | Hours per application |
 | Auto-apply | Full form navigation + submission | LinkedIn Easy Apply only | Click, type, repeat |
-| Supported sites | Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs, 46 Workday portals, 28 direct sites | LinkedIn | Whatever you open |
+| Supported sites | Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs, 48 Workday portals, 30 direct sites | LinkedIn | Whatever you open |
 | License | AGPL-3.0 | MIT | N/A |
 
 ---
@@ -170,7 +187,7 @@ applypilot run --workers 4              # Parallel discovery/enrichment
 applypilot run --stream                 # Concurrent stages (streaming mode)
 applypilot run --min-score 8            # Override score threshold
 applypilot run --dry-run                # Preview without executing
-applypilot run --validation lenient     # Relax validation (recommended for Gemini free tier)
+applypilot run --validation lenient     # Relax validation: skip the LLM judge (fastest, fewest API calls)
 applypilot run --validation strict      # Strictest validation (retries on any banned word)
 applypilot apply                        # Launch auto-apply
 applypilot apply --workers 3            # Parallel browser workers
