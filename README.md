@@ -43,6 +43,9 @@ applypilot apply --dry-run  # fill forms without submitting
 
 > **New here?** [SETUP.md](SETUP.md) is the full step-by-step walkthrough — install,
 > config, résumé modes, the control panel, supervised auto-apply, and Telegram pings.
+> **Not a developer?** It starts with a copy-paste prompt that has Claude Code do the
+> entire install and configuration for you, and a one-line installer with a
+> double-clickable launcher for macOS.
 
 ### Control panel
 

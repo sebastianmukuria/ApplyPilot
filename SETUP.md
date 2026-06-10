@@ -15,10 +15,51 @@ pipeline does the rest.
 
 macOS and Linux are supported; Windows mostly works but is less tested.
 
-## 1. Install
+## 1. Install — pick ONE of three ways
+
+### Path A — Let Claude Code set everything up (easiest, no terminal skills needed)
+
+You need [Claude Code](https://claude.com/claude-code) for auto-apply anyway, so
+let it do the install too. Install Claude Code (desktop app or CLI), open it,
+and paste this prompt:
+
+> Set up ApplyPilot on this machine for me, step by step.
+> Repo: https://github.com/sebastianmukuria/ApplyPilot — branch `fixes/pre-flight`.
+>
+> 1. Clone it to ~/ApplyPilot and read SETUP.md in the repo root. Follow its
+>    install steps (Python 3.11+ venv, `pip install -e ".[gui]"`, the
+>    python-jobspy install note, `playwright install chromium`). Install any
+>    missing prerequisites for me (git, Python 3.11+).
+> 2. Run `applypilot init` and help me complete it — ask me for my résumé
+>    (I can give you a PDF or text), my contact details, and what job titles
+>    and locations to search.
+> 3. Help me get a free Gemini API key at https://aistudio.google.com/apikey,
+>    put it in ~/.applypilot/.env, and set LLM_MODEL=gemini-3.1-flash-lite
+>    (must be a non-thinking model — SETUP.md section 3 explains why).
+> 4. Open ~/.applypilot/profile.json and help me fill in work_context (my real
+>    projects), work_authorization, and eeo_voluntary, following SETUP.md
+>    section 2.
+> 5. Run `applypilot doctor`, fix anything it flags, then launch
+>    `applypilot gui` and give me a quick tour of the dashboard.
+>
+> Ask me for anything you need along the way.
+
+### Path B — One-line installer (macOS / Linux)
 
 ```bash
-git clone https://github.com/sebastianmukuria/ApplyPilot.git
+curl -fsSL https://raw.githubusercontent.com/sebastianmukuria/ApplyPilot/fixes/pre-flight/install.sh | bash
+```
+
+Installs to `~/ApplyPilot`, then tells you the next steps. Needs git and
+Python 3.11+ already on the machine (it tells you how to get them if not).
+On macOS you can afterwards just **double-click `ApplyPilot.command`** in the
+ApplyPilot folder — first run walks you through setup, every run after that
+opens the control panel.
+
+### Path C — Manual install
+
+```bash
+git clone -b fixes/pre-flight https://github.com/sebastianmukuria/ApplyPilot.git
 cd ApplyPilot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[gui]"
