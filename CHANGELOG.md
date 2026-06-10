@@ -5,6 +5,47 @@ All notable changes to ApplyPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- The auto-apply agent no longer keeps Bash/Edit/Write/WebFetch/WebSearch — only
+  the browser, Read, and the Gmail tools it needs — and the prompt now refuses
+  instructions embedded in page content (prompt-injection guard).
+- `profile.json`, `.env`, generated prompt logs, MCP configs, and the SQLite DB
+  are written `0600` (and `~/.applypilot` is `0700`).
+
+### Fixed
+- `apply --dry-run` is now genuinely side-effect-free: it never sends an
+  application email and never marks jobs applied (previously it did both).
+- Screening answers (age, background check, felony, "previously worked here")
+  come from `profile.screening` instead of hardcoded values; unset legally
+  significant answers are flagged for the human rather than guessed. The agent
+  no longer claims experience with tools the candidate hasn't listed.
+- `apply --url` now matches fresh (unapplied) jobs and won't file duplicates.
+- Location filter no longer discards nearly every job — it reads the documented
+  `location.accept_patterns` schema and treats an empty accept list as "keep".
+- The real company name is stored and used in scoring, tailoring, cover letters,
+  the apply prompt, and the dashboard (was showing the job board, e.g. "linkedin").
+- Scoring failures (rate limits, parse errors) leave jobs pending for retry
+  instead of writing a permanent `fit_score=0`; scores commit incrementally so an
+  interrupt doesn't discard the run; markdown-decorated scores parse correctly.
+- Tailored resumes and cover letters get collision-free filenames, and parallel
+  apply workers no longer share one upload path.
+- The fabrication watchlist is word-boundary matched and respects the candidate's
+  real skills (no more false hits on "scalable"/"guardrails"; legitimate C++/C#
+  skills allowed).
+- Cover-letter PDFs render the actual letter body (were near-empty).
+- Sequential `run` no longer silently caps tailoring/cover letters at 20 jobs.
+- Jobs stranded `in_progress` by a crashed run are recovered at apply startup.
+- One failing site no longer aborts the whole smart-extract stage.
+
+### Changed
+- `applypilot doctor` checks for the Playwright browser; README and the init
+  wizard tell you to run `playwright install chromium`.
+- Re-running `applypilot init` merges into the existing `.env` (preserving keys
+  like `CAPSOLVER_API_KEY`) and prompts before overwriting `profile.json` /
+  `searches.yaml`. A plain-text resume is now required (or an explicit skip).
+
 ## [0.2.0] - 2026-02-17
 
 ### Added
