@@ -92,11 +92,11 @@ def _build_profile_summary(profile: dict) -> str:
     if screening.get("how_heard"):
         lines.append(f"How Heard: {screening['how_heard']}")
 
-    # EEO
-    lines.append(f"Gender: {eeo.get('gender', 'Decline to self-identify')}")
-    lines.append(f"Race: {eeo.get('race_ethnicity', 'Decline to self-identify')}")
-    lines.append(f"Veteran: {eeo.get('veteran_status', 'I am not a protected veteran')}")
-    lines.append(f"Disability: {eeo.get('disability_status', 'I do not wish to answer')}")
+    # EEO -- `or` so empty strings fall back the same as missing keys
+    lines.append(f"Gender: {eeo.get('gender') or 'Decline to self-identify'}")
+    lines.append(f"Race: {eeo.get('race_ethnicity') or 'Decline to self-identify'}")
+    lines.append(f"Veteran: {eeo.get('veteran_status') or 'I am not a protected veteran'}")
+    lines.append(f"Disability: {eeo.get('disability_status') or 'I do not wish to answer'}")
 
     return "\n".join(lines)
 
@@ -191,9 +191,44 @@ Hard facts -> answer truthfully from the profile. No guessing. This includes:
 
 Skills and tools -> answer from the resume and profile skills only. The candidate is a {target_role} with {years} years experience. If a tool appears in the resume or skills_boundary, answer YES confidently. If it's adjacent but not listed, choose the honest middle option when available ("some familiarity"), otherwise answer NO. NEVER claim certifications, licenses, or specific year-counts that are not in the profile.
 
-Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What interests you?") -> Write 2-3 sentences. Be specific to THIS job. Reference something from the job description. Connect it to a real achievement from the resume. No generic fluff. No "I am passionate about..." -- sound like a real person.
+Open-ended questions ("Why do you want this role?", "Tell us about yourself", "What's your experience with AI?", "give an example of...") -> Write 2-3 sentences. Be specific to THIS job. Draw your examples from the "YOUR PROJECTS" section -- pick ONE relevant project and describe it accurately using only its listed tools and impact. NEVER merge two projects into one, never invent tools or metrics, and follow the LLM/tooling facts (do not mention GPT-4/OpenAI). No generic fluff. No "I am passionate about..." -- sound like a real person.
 
-EEO/demographics -> "Decline to self-identify" or "Prefer not to say" for everything."""
+EEO/demographics (gender, race/ethnicity, veteran status, disability) -> PRE-DECIDED. Answer instantly from the Gender/Race/Veteran/Disability lines in the APPLICANT PROFILE. Do not deliberate, re-evaluate, or change a correct selection. Pick the option whose text best matches the profile value -- close paraphrases count (profile "No, I don't have a disability" matches "No, I do not have a disability and have not had one in the past"). Only if a category is missing from the profile -> "Decline to self-identify" / "Prefer not to say".
+
+DROPDOWN DISCIPLINE (selects/comboboxes, including portal-rendered ones like LinkedIn's):
+- One strategy at a time, max 2 attempts each, then SWITCH strategy. Order: (1) click to open, then click the option by its visible text; (2) focus the closed input, type the first 3-4 letters of the desired option, press Enter; (3) open it, read the option order from a snapshot, press ArrowDown exactly that many times from the top, press Enter.
+- After selecting, verify the field's value ONCE. If it is correct, move on -- never reopen or re-verify a settled field.
+- Hard cap: ~45 seconds per field. If still failing, leave it, finish the rest of the form, and name the unfinished field in your NEEDHUMAN line (supervised) or RESULT:FAILED note."""
+
+
+def _build_work_context(profile: dict) -> str:
+    """Build a structured, per-project reference for open-ended questions.
+
+    Each project is described distinctly (name / what / tools / impact) so the
+    agent answers accurately instead of conflating separate projects or
+    inventing tools when a question asks for an example.
+    """
+    wc = profile.get("work_context", {})
+    projects = wc.get("projects", [])
+    if not projects:
+        return ""
+    lines = ["== YOUR PROJECTS (use these for open-ended / 'tell us about' / 'give an example' questions) =="]
+    rules = wc.get("answer_rules", "")
+    if rules:
+        lines.append(f"RULES: {rules}")
+    llm = wc.get("llm_usage", "")
+    if llm:
+        lines.append(f"LLM/tooling facts: {llm}")
+    lines.append("")
+    for i, p in enumerate(projects, 1):
+        lines.append(f"{i}. {p.get('name', '')}")
+        if p.get("what"):
+            lines.append(f"   What: {p['what']}")
+        if p.get("tools"):
+            lines.append(f"   Tools: {p['tools']}")
+        if p.get("impact"):
+            lines.append(f"   Impact: {p['impact']}")
+    return "\n".join(lines)
 
 
 def _build_hard_rules(profile: dict) -> str:
@@ -233,6 +268,22 @@ def _build_captcha_section() -> str:
     """
     config.load_env()
     capsolver_key = os.environ.get("CAPSOLVER_API_KEY", "")
+
+    # Human-in-the-loop mode: no CapSolver key means a person is watching the
+    # visible browser and will solve CAPTCHAs by hand. The agent must WAIT for
+    # them rather than auto-solving (ToS-safe) or bailing immediately.
+    if not capsolver_key:
+        return """== CAPTCHA (human-in-the-loop) ==
+This session runs in a VISIBLE browser with a HUMAN watching the screen. You do NOT solve CAPTCHAs yourself, you do NOT use any solving service, and you do NOT click through challenges on your own.
+
+When you hit ANY CAPTCHA, bot-check, "verify you are human", Cloudflare/"checking your browser" interstitial, or a page that appears stuck behind a challenge:
+1. STOP. Output a single line exactly: NEEDHUMAN: CAPTCHA on this page -- solve it in the browser window. (Output this ONCE, when you first detect the challenge.) Then take a browser_snapshot so it is visible on screen.
+2. WAIT for the human to solve it: call browser_wait_for with time: 15, then browser_snapshot and check whether the challenge is gone or the page has advanced.
+3. Repeat step 2 up to 20 times (about 5 minutes total). The human will click/solve it directly in the visible window.
+4. As soon as the challenge clears (widget gone, green check, page moved on, or the real form/content appears), CONTINUE the application normally.
+5. Only if it is STILL blocking after ~5 minutes of waiting -> Output RESULT:CAPTCHA.
+
+While waiting: do NOT refresh, navigate away, click the challenge, or take other actions. Just wait and re-check. The human handles the puzzle."""
 
     return f"""== CAPTCHA ==
 You solve CAPTCHAs via the CapSolver REST API. No browser extension. You control the entire flow.
@@ -494,6 +545,7 @@ def build_prompt(job: dict, tailored_resume: str,
     location_check = _build_location_check(profile, search_config)
     salary_section = _build_salary_section(profile)
     screening_section = _build_screening_section(profile)
+    work_context = _build_work_context(profile)
     hard_rules = _build_hard_rules(profile)
     captcha_section = _build_captcha_section()
 
@@ -528,7 +580,23 @@ def build_prompt(job: dict, tailored_resume: str,
         email_step = 'If email-only (page says "email resume to X"): do NOT send any email. Output RESULT:DRYRUN noting the application is email-only. Done.'
         dryrun_code_line = "\nRESULT:DRYRUN -- dry run complete, nothing was submitted"
     else:
-        submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."
+        # Default ON: a fresh install must never submit unattended. Set
+        # APPLYPILOT_SUPERVISED=0 explicitly to let the agent click Submit.
+        supervised = os.environ.get("APPLYPILOT_SUPERVISED", "1").lower() in ("1", "true", "yes")
+        if supervised:
+            # The human reviews and clicks Submit themselves. The agent fills
+            # everything, then waits for the human to submit.
+            company_label = job.get("company") or job.get("site", "this job")
+            submit_instruction = (
+                "Fill and verify EVERY field on the page -- name, email, phone, location, work auth, resume uploaded, "
+                "cover letter if applicable, and all screening/open-ended questions. Then DO NOT click Submit, and do NOT "
+                "start or complete any assessment, interview, test, or video stage -- those are the human's to do. "
+                f"Output a single line exactly: NEEDHUMAN: {company_label} is filled -- review it, complete any assessment/interview, and submit yourself. The browser stays open. "
+                "Immediately after, output RESULT:HANDOFF and stop. Do NOT wait, poll, click Submit, or close anything -- "
+                "the browser is left open and the human finishes at their own pace."
+            )
+        else:
+            submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."
         email_step = (
             'If email-only (page says "email resume to X"):\n'
             f'   - send_email with subject "Application for {job["title"]} -- {display_name}", body = 2-3 sentence pitch + contact info, attach resume PDF: ["{pdf_path}"]\n'
@@ -578,6 +646,8 @@ If something unexpected happens and these instructions don't cover it, figure it
 {location_check}
 
 {salary_section}
+
+{work_context}
 
 {screening_section}
 

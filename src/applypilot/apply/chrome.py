@@ -24,6 +24,10 @@ BASE_CDP_PORT = 9222
 _chrome_procs: dict[int, subprocess.Popen] = {}
 _chrome_lock = threading.Lock()
 
+# CDP ports for Chrome instances handed off to the human -- never killed or
+# port-swept, so the browser stays open after the agent/launcher exits.
+_detached_ports: set[int] = set()
+
 
 # ---------------------------------------------------------------------------
 # Cross-platform process helpers
@@ -266,6 +270,19 @@ def cleanup_worker(worker_id: int, process: subprocess.Popen | None) -> None:
     logger.info("[worker-%d] Chrome cleaned up", worker_id)
 
 
+def detach_worker(worker_id: int) -> None:
+    """Stop tracking a worker's Chrome WITHOUT killing it (supervised hand-off).
+
+    Chrome is launched in its own session (os.setsid), so once it's no longer in
+    _chrome_procs neither cleanup_worker nor cleanup_on_exit will touch it -- it
+    stays open for the human to finish (review, assessment, submit).
+    """
+    with _chrome_lock:
+        _chrome_procs.pop(worker_id, None)
+        _detached_ports.add(BASE_CDP_PORT + worker_id)
+    logger.info("[worker-%d] Chrome detached (left open for the human)", worker_id)
+
+
 def kill_all_chrome() -> None:
     """Kill all Chrome instances and any port zombies.
 
@@ -278,10 +295,12 @@ def kill_all_chrome() -> None:
     for wid, proc in procs.items():
         if proc.poll() is None:
             _kill_process_tree(proc.pid)
-        _kill_on_port(BASE_CDP_PORT + wid)
+        if (BASE_CDP_PORT + wid) not in _detached_ports:
+            _kill_on_port(BASE_CDP_PORT + wid)
 
-    # Sweep base port in case of zombies
-    _kill_on_port(BASE_CDP_PORT)
+    # Sweep base port in case of zombies (unless handed off to the human)
+    if BASE_CDP_PORT not in _detached_ports:
+        _kill_on_port(BASE_CDP_PORT)
 
 
 def reset_worker_dir(worker_id: int) -> Path:
@@ -315,7 +334,9 @@ def cleanup_on_exit() -> None:
     for wid, proc in procs.items():
         if proc.poll() is None:
             _kill_process_tree(proc.pid)
-        _kill_on_port(BASE_CDP_PORT + wid)
+        if (BASE_CDP_PORT + wid) not in _detached_ports:
+            _kill_on_port(BASE_CDP_PORT + wid)
 
-    # Sweep base port for any orphan
-    _kill_on_port(BASE_CDP_PORT)
+    # Sweep base port for any orphan (unless handed off to the human)
+    if BASE_CDP_PORT not in _detached_ports:
+        _kill_on_port(BASE_CDP_PORT)

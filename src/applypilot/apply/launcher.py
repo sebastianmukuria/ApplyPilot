@@ -84,6 +84,46 @@ def _make_mcp_config(cdp_port: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Human-in-the-loop notifications
+# ---------------------------------------------------------------------------
+
+_last_notify: dict[int, float] = {}  # worker_id -> last ping time (throttle)
+
+
+def _notify_human(worker_id: int, reason: str) -> None:
+    """Ping the user (Telegram + local sound) when an application needs them.
+
+    Fired when the agent emits a ``NEEDHUMAN:`` line (CAPTCHA or submit review).
+    Throttled to at most one ping per worker per 40s to avoid spam from the
+    agent's wait loop.
+    """
+    now = time.time()
+    if now - _last_notify.get(worker_id, 0) < 40:
+        return
+    _last_notify[worker_id] = now
+    text = f"🔔 ApplyPilot needs you: {reason}"[:300]
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if token and chat:
+        try:
+            import httpx
+            httpx.get(f"https://api.telegram.org/bot{token}/sendMessage",
+                      params={"chat_id": chat, "text": text}, timeout=10)
+        except Exception:
+            logger.debug("Telegram ping failed", exc_info=True)
+
+    # Local sound backup (macOS).
+    try:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    add_event(f"[W{worker_id}] 🔔 pinged you: {reason[:30]}")
+
+
+# ---------------------------------------------------------------------------
 # Database operations
 # ---------------------------------------------------------------------------
 
@@ -450,6 +490,9 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                             if bt == "text":
                                 text_parts.append(block["text"])
                                 lf.write(block["text"] + "\n")
+                                if "NEEDHUMAN:" in block["text"]:
+                                    reason = block["text"].split("NEEDHUMAN:", 1)[1].strip().split("\n")[0][:160]
+                                    _notify_human(worker_id, reason or "an application needs your input")
                             elif bt == "tool_use":
                                 name = (
                                     block.get("name", "")
@@ -512,7 +555,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         def _clean_reason(s: str) -> str:
             return re.sub(r'[*`"]+$', '', s).strip()
 
-        for result_status in ["DRYRUN", "APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
+        for result_status in ["DRYRUN", "HANDOFF", "APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in output:
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
                 update_state(worker_id, status=result_status.lower(),
@@ -654,6 +697,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         seen_urls.add(job["url"])
 
         chrome_proc = None
+        result = ""
         try:
             add_event(f"[W{worker_id}] Launching Chrome...")
             chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
@@ -670,6 +714,14 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 # loop tail (jobs_done/target_url) -- do NOT `continue`.
                 release_lock(job["url"])
                 add_event(f"[W{worker_id}] DRY RUN OK: {job['title'][:30]}")
+            elif result == "handoff":
+                # Supervised hand-off: agent filled the form and left the browser
+                # open for the human to finish (review, assessment, submit). Detach
+                # Chrome so it is NOT killed, and skip the finally cleanup.
+                chrome.detach_worker(worker_id)
+                chrome_proc = None
+                mark_result(job["url"], "handoff")
+                add_event(f"[W{worker_id}] Handed off -- browser left open for you: {job['title'][:30]}")
             elif result == "applied" and dry_run:
                 # Agent ignored the dry-run instruction and claimed APPLIED.
                 # Do NOT mark applied -- release and warn.
@@ -707,7 +759,12 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                 cleanup_worker(worker_id, chrome_proc)
 
         jobs_done += 1
-        if target_url:
+        # A hand-off ends the run: the human is now busy finishing that one
+        # (review/assessment/submit) in the browser we left open. Re-run apply
+        # to get the next job once they're done.
+        if target_url or result == "handoff":
+            if result == "handoff":
+                add_event(f"[W{worker_id}] Stopping after hand-off -- finish it, then re-run apply for the next")
             break
 
     update_state(worker_id, status="done", last_action="finished")
