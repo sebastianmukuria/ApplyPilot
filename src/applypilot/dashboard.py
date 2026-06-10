@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -52,6 +52,19 @@ st.set_page_config(page_title="ApplyPilot", layout="wide", page_icon=":material/
 STAFFING = ["robert half", "fitt talent", "why hiring", "thecorporate", "crossing hurdles", "recruit", "staffing"]
 MARKETPLACE = ["turing", "toptal", "upwork", "mercor", "fiverr", "gun.io"]
 ACCENTS = {"Clay": "#d97757", "Slate Blue": "#6a9bcc", "Sage": "#788c5d"}
+
+USAGE_FILE = APP / "llm_usage.jsonl"
+# $ per 1M tokens (input, output). Estimates — edit to match your provider's
+# current pricing. Longest-prefix match against the logged model name.
+PRICES = {
+    "gemini-3.1-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash": (0.30, 2.50),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+}
+DEFAULT_PRICE = (0.10, 0.40)
 
 # status -> (pill css modifier, label)
 PILLS = {
@@ -124,6 +137,30 @@ def counts() -> dict:
         "handoff": "SELECT COUNT(*) FROM jobs WHERE apply_status='handoff'",
         "failed": "SELECT COUNT(*) FROM jobs WHERE apply_status='failed'",
     }.items()}
+
+
+def llm_spend() -> dict:
+    """Aggregate llm_usage.jsonl into estimated cost (lifetime + today, by model)."""
+    out = {"cost": 0.0, "today": 0.0, "tok_in": 0, "tok_out": 0, "calls": 0, "by_model": {}}
+    if not USAGE_FILE.exists():
+        return out
+    today = datetime.now(timezone.utc).date().isoformat()  # usage is logged in UTC
+    for ln in USAGE_FILE.read_text(errors="ignore").splitlines():
+        try:
+            r = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        model = r.get("model", "?")
+        p_in, p_out = max(((k, v) for k, v in PRICES.items() if model.startswith(k)),
+                          key=lambda kv: len(kv[0]), default=("", DEFAULT_PRICE))[1]
+        cost = r.get("in", 0) / 1e6 * p_in + r.get("out", 0) / 1e6 * p_out
+        out["cost"] += cost
+        out["tok_in"] += r.get("in", 0); out["tok_out"] += r.get("out", 0); out["calls"] += 1
+        if r.get("ts", "").startswith(today):
+            out["today"] += cost
+        m = out["by_model"].setdefault(model, {"cost": 0.0, "in": 0, "out": 0, "calls": 0})
+        m["cost"] += cost; m["in"] += r.get("in", 0); m["out"] += r.get("out", 0); m["calls"] += 1
+    return out
 
 
 def salary_num(s) -> int:
@@ -295,7 +332,7 @@ _CSS = """
 .ap-title { font-family: 'Lora', Georgia, serif !important; font-size: 32px; font-weight: 500; letter-spacing: -.3px; line-height: 1.1; color: var(--ap-ink) !important; margin-top: 4px; }
 .ap-dateline { font-family: 'Lora', Georgia, serif !important; font-style: italic; font-size: 13px; color: var(--ap-muted) !important; padding-bottom: 1px; }
 .ap-rule { height: 2px; background: var(--ap-rule); margin: 0 0 22px; }
-.ap-stats { display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--ap-hairline); border-bottom: 1px solid var(--ap-hairline); margin-bottom: 6px; }
+.ap-stats { display: grid; grid-template-columns: repeat(8, 1fr); border-top: 1px solid var(--ap-hairline); border-bottom: 1px solid var(--ap-hairline); margin-bottom: 6px; }
 .ap-stat { padding: 14px 18px; }
 .ap-stat + .ap-stat { border-left: 1px solid var(--ap-hairline); }
 .ap-stat-label { font-family: 'Poppins', Arial, sans-serif !important; font-size: 10.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; color: var(--ap-muted) !important; margin-bottom: 6px; }
@@ -551,6 +588,9 @@ for label, key in [("Discovered", "total"), ("Scored", "scored"), ("Strong &ge;7
     bad = " is-bad" if key == "failed" and c[key] > 0 else ""
     _cells.append(f'<div class="ap-stat"><div class="ap-stat-label">{label}</div>'
                   f'<div class="ap-stat-num{bad}">{c[key]:,}</div></div>')
+_spend = llm_spend()
+_cells.append(f'<div class="ap-stat"><div class="ap-stat-label">Est. spend</div>'
+              f'<div class="ap-stat-num">${_spend["cost"]:,.2f}</div></div>')
 st.markdown(f'<div class="ap-stats">{"".join(_cells)}</div>', unsafe_allow_html=True)
 
 tab_q, tab_s, tab_a = st.tabs(["Queue", "Stats", "Answers & Projects"])
@@ -716,6 +756,21 @@ with tab_s:
         themed_bar(df, "date", "applications", x_type="ordinal", label_angle=-40)
     else:
         st.caption("No applications yet.")
+
+    st.markdown(eyebrow("Spend"), unsafe_allow_html=True)
+    st.subheader("LLM cost (estimated)")
+    sp = llm_spend()
+    if sp["calls"]:
+        st.markdown(f"**${sp['cost']:,.2f}** lifetime &middot; ${sp['today']:,.2f} today &middot; "
+                    f"{sp['calls']:,} calls &middot; {sp['tok_in']:,} tokens in / {sp['tok_out']:,} out",
+                    unsafe_allow_html=True)
+        for m, v in sorted(sp["by_model"].items(), key=lambda kv: -kv[1]["cost"]):
+            st.caption(f"{m} — ${v['cost']:,.2f} ({v['calls']:,} calls · "
+                       f"{v['in']:,} in / {v['out']:,} out)")
+    else:
+        st.caption("No usage recorded yet — tracking starts with your next pipeline run.")
+    st.caption("Estimates from the PRICES table in dashboard.py — edit it to match your "
+               "provider's billing. Apply runs use your Claude subscription (no per-run API cost).")
 
     ccol, scol = st.columns(2)
     with ccol:

@@ -93,6 +93,27 @@ class LLMClient:
         self._use_native_gemini: bool = False
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
 
+    def _log_usage(self, prompt_tokens, completion_tokens) -> None:
+        """Append one usage record to ~/.applypilot/llm_usage.jsonl.
+
+        Raw token counts only -- cost estimation happens in the GUI, where the
+        price table lives. Append of a single short line is atomic enough for
+        the parallel pipeline workers. Never let accounting break a request.
+        """
+        if prompt_tokens is None and completion_tokens is None:
+            return
+        try:
+            import json as _json
+            from datetime import datetime as _dt, timezone as _tz
+            from applypilot.config import APP_DIR
+            rec = {"ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+                   "model": self.model,
+                   "in": int(prompt_tokens or 0), "out": int(completion_tokens or 0)}
+            with open(APP_DIR / "llm_usage.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(_json.dumps(rec) + "\n")
+        except Exception:
+            log.debug("Could not record LLM usage", exc_info=True)
+
     # -- Native Gemini API --------------------------------------------------
 
     def _chat_native_gemini(
@@ -142,6 +163,8 @@ class LLMClient:
         )
         resp.raise_for_status()
         data = resp.json()
+        meta = data.get("usageMetadata", {})
+        self._log_usage(meta.get("promptTokenCount"), meta.get("candidatesTokenCount"))
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
     # -- OpenAI-compat API --------------------------------------------------
@@ -177,10 +200,11 @@ class LLMClient:
 
         return self._handle_compat_response(resp)
 
-    @staticmethod
-    def _handle_compat_response(resp: httpx.Response) -> str:
+    def _handle_compat_response(self, resp: httpx.Response) -> str:
         resp.raise_for_status()
         data = resp.json()
+        usage = data.get("usage", {})
+        self._log_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"))
         return data["choices"][0]["message"]["content"]
 
     # -- public API ---------------------------------------------------------
