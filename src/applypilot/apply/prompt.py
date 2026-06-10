@@ -159,16 +159,16 @@ def _build_salary_section(profile: dict) -> str:
     else:
         convert_line = "Posting is in a different currency? -> Target midpoint of their range. Convert if needed."
 
-    return f"""== SALARY (think, don't just copy) ==
-${floor} {currency} is the FLOOR. Never go below it. But don't always use it either.
+    return f"""== SALARY (mirror the posting) ==
+Default to what THIS job posting says -- the posting's own numbers are the answer.
 
 Decision tree:
-1. Job posting shows a range (e.g. "$120K-$160K")? -> Answer with the MIDPOINT ($140K).
-2. Title says Senior, Staff, Lead, Principal, Architect, or level II/III/IV? -> Minimum $110K {currency}. Use midpoint of posted range if higher.
+1. Posting shows a range (e.g. "$120K-$160K")? -> single-number question: answer the MIDPOINT ($140K); range question: repeat their posted range.
+2. Posting shows one number? -> Use that number.
 3. {convert_line}
-4. No salary info anywhere? -> Use ${floor} {currency}.
-5. Asked for a range? -> Give posted midpoint minus 10% to midpoint plus 10%. No posted range? -> "${range_min}-${range_max} {currency}".
-6. Hourly rate? -> Divide your annual answer by 2080. ({hourly_line})"""
+4. Hourly rate asked? -> Divide your annual answer by 2080. ({hourly_line})
+5. ONLY if the posting has no salary info anywhere -> ${floor} {currency} (range question: "${range_min}-${range_max} {currency}").
+6. Optional free-text salary field? -> "Negotiable" beats a number."""
 
 
 def _build_screening_section(profile: dict) -> str:
@@ -592,8 +592,9 @@ def build_prompt(job: dict, tailored_resume: str,
                 "cover letter if applicable, and all screening/open-ended questions. Then DO NOT click Submit, and do NOT "
                 "start or complete any assessment, interview, test, or video stage -- those are the human's to do. "
                 f"Output a single line exactly: NEEDHUMAN: {company_label} is filled -- review it, complete any assessment/interview, and submit yourself. The browser stays open. "
-                "Immediately after, output RESULT:HANDOFF and stop. Do NOT wait, poll, click Submit, or close anything -- "
-                "the browser is left open and the human finishes at their own pace."
+                "Immediately after, output RESULT:HANDOFF and stop. Do NOT wait, poll, or click Submit. "
+                "NEVER call browser_close or close any tab or window -- not before, not after RESULT:HANDOFF. "
+                "The filled page must stay open exactly as-is; the human finishes at their own pace."
             )
         else:
             submit_instruction = "BEFORE clicking Submit/Apply, take a snapshot and review EVERY field on the page. Verify all data matches the APPLICANT PROFILE and TAILORED RESUME -- name, email, phone, location, work auth, resume uploaded, cover letter if applicable. If anything is wrong or missing, fix it FIRST. Only click Submit after confirming everything is correct."

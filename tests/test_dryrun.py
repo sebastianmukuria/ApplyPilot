@@ -73,8 +73,12 @@ def test_dangerous_builtin_tools_disallowed():
     disallowed = cmd[cmd.index("--disallowedTools") + 1]
     for tool in ("Bash", "Edit", "Write", "WebFetch", "WebSearch"):
         assert tool in disallowed
-    # Browser + read must remain available (not in the deny list as standalone tokens).
-    assert "mcp__playwright__" not in disallowed
+    # browser_close is denied (it would close a handed-off tab the human is
+    # reviewing); every other browser tool must remain available.
+    tokens = disallowed.split(",")
+    assert "mcp__playwright__browser_close" in tokens
+    assert not any(t.startswith("mcp__playwright__") for t in tokens
+                   if t != "mcp__playwright__browser_close")
 
 
 def test_prompt_injection_guard_present(tmp_path, monkeypatch):

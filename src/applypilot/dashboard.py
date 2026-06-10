@@ -229,6 +229,8 @@ def stop_run() -> str:
     subprocess.run(["pkill", "-9", "-f", "mcp-apply"], stderr=subprocess.DEVNULL)
     subprocess.run("lsof -ti tcp:9222 | xargs -r kill -9", shell=True, stderr=subprocess.DEVNULL)
     ACTIVE_FILE.unlink(missing_ok=True)
+    # the explicit nuke also forgets handed-off browsers (they're fair game here)
+    (APP / "detached_ports.json").unlink(missing_ok=True)
     return ", ".join(killed) or "any orphaned apply processes"
 
 

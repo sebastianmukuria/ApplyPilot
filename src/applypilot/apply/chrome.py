@@ -6,6 +6,7 @@ worker profile setup/cloning, and cross-platform process cleanup.
 
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -22,11 +23,44 @@ BASE_CDP_PORT = 9222
 
 # Track Chrome processes per worker for cleanup
 _chrome_procs: dict[int, subprocess.Popen] = {}
+# Actual CDP port per worker (may differ from BASE+worker_id when a
+# handed-off Chrome still owns the default slot)
+_worker_ports: dict[int, int] = {}
 _chrome_lock = threading.Lock()
 
 # CDP ports for Chrome instances handed off to the human -- never killed or
 # port-swept, so the browser stays open after the agent/launcher exits.
 _detached_ports: set[int] = set()
+
+# Hand-offs must also survive FUTURE apply runs (a new process has an empty
+# _detached_ports and its zombie sweep would kill the human's session), so
+# detached ports are persisted to disk with the owning Chrome pid.
+_DETACHED_FILE = config.APP_DIR / "detached_ports.json"
+
+
+def _write_detached(d: dict[int, int]) -> None:
+    try:
+        _DETACHED_FILE.write_text(json.dumps({str(k): v for k, v in d.items()}))
+    except OSError:
+        logger.debug("Could not persist detached ports", exc_info=True)
+
+
+def _read_detached() -> dict[int, int]:
+    """Persisted {port: chrome_pid} for handed-off browsers, pruned of dead pids."""
+    try:
+        raw = json.loads(_DETACHED_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    alive: dict[int, int] = {}
+    for p, pid in raw.items():
+        try:
+            os.kill(int(pid), 0)
+            alive[int(p)] = int(pid)
+        except (OSError, ValueError):
+            pass  # that Chrome is gone; the port is free again
+    if len(alive) != len(raw):
+        _write_detached(alive)
+    return alive
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +225,7 @@ def _suppress_restore_nag(profile_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def launch_chrome(worker_id: int, port: int | None = None,
-                  headless: bool = False) -> subprocess.Popen:
+                  headless: bool = False) -> tuple[subprocess.Popen, int]:
     """Launch a Chrome instance with remote debugging for a worker.
 
     Args:
@@ -200,12 +234,28 @@ def launch_chrome(worker_id: int, port: int | None = None,
         headless: Run Chrome in headless mode (no visible window).
 
     Returns:
-        subprocess.Popen handle for the Chrome process.
+        (Popen handle, actual CDP port). The port can differ from the request
+        when a handed-off Chrome from a previous run still owns it.
     """
     if port is None:
         port = BASE_CDP_PORT + worker_id
 
-    profile_dir = setup_worker_profile(worker_id)
+    # A handed-off Chrome may still own this port (the human is finishing an
+    # application in it). Never kill it -- shift to a parallel slot instead.
+    # The slot shift also moves to a separate profile dir, since a second
+    # Chrome can't share a live profile (SingletonLock).
+    profile_worker = worker_id
+    detached = _read_detached()
+    while port in detached:
+        profile_worker += 10
+        port = BASE_CDP_PORT + profile_worker
+        if profile_worker > worker_id + 50:  # safety stop
+            break
+    if profile_worker != worker_id:
+        logger.info("[worker-%d] Port %d is a live hand-off; using port %d instead",
+                    worker_id, BASE_CDP_PORT + worker_id, port)
+
+    profile_dir = setup_worker_profile(profile_worker)
 
     # Kill any zombie Chrome from a previous run on this port
     _kill_on_port(port)
@@ -248,12 +298,13 @@ def launch_chrome(worker_id: int, port: int | None = None,
     proc = subprocess.Popen(cmd, **kwargs)
     with _chrome_lock:
         _chrome_procs[worker_id] = proc
+        _worker_ports[worker_id] = port
 
     # Give Chrome time to start and open the debug port
     time.sleep(3)
     logger.info("[worker-%d] Chrome started on port %d (pid %d)",
                 worker_id, port, proc.pid)
-    return proc
+    return proc, port
 
 
 def cleanup_worker(worker_id: int, process: subprocess.Popen | None) -> None:
@@ -275,31 +326,45 @@ def detach_worker(worker_id: int) -> None:
 
     Chrome is launched in its own session (os.setsid), so once it's no longer in
     _chrome_procs neither cleanup_worker nor cleanup_on_exit will touch it -- it
-    stays open for the human to finish (review, assessment, submit).
+    stays open for the human to finish (review, assessment, submit). The port is
+    also persisted (with the Chrome pid) so FUTURE apply runs route around it
+    instead of zombie-sweeping the human's session.
     """
     with _chrome_lock:
-        _chrome_procs.pop(worker_id, None)
-        _detached_ports.add(BASE_CDP_PORT + worker_id)
-    logger.info("[worker-%d] Chrome detached (left open for the human)", worker_id)
+        proc = _chrome_procs.pop(worker_id, None)
+        port = _worker_ports.pop(worker_id, BASE_CDP_PORT + worker_id)
+        _detached_ports.add(port)
+    if proc is not None:
+        d = _read_detached()
+        d[port] = proc.pid
+        _write_detached(d)
+    logger.info("[worker-%d] Chrome detached on port %d (left open for the human)",
+                worker_id, port)
 
 
 def kill_all_chrome() -> None:
     """Kill all Chrome instances and any port zombies.
 
     Called during graceful shutdown to ensure no orphan Chrome processes.
+    Ports belonging to handed-off browsers (this process or a previous one)
+    are never swept.
     """
     with _chrome_lock:
         procs = dict(_chrome_procs)
+        ports = dict(_worker_ports)
         _chrome_procs.clear()
+        _worker_ports.clear()
 
+    protected = _detached_ports | set(_read_detached())
     for wid, proc in procs.items():
         if proc.poll() is None:
             _kill_process_tree(proc.pid)
-        if (BASE_CDP_PORT + wid) not in _detached_ports:
-            _kill_on_port(BASE_CDP_PORT + wid)
+        wport = ports.get(wid, BASE_CDP_PORT + wid)
+        if wport not in protected:
+            _kill_on_port(wport)
 
     # Sweep base port in case of zombies (unless handed off to the human)
-    if BASE_CDP_PORT not in _detached_ports:
+    if BASE_CDP_PORT not in protected:
         _kill_on_port(BASE_CDP_PORT)
 
 
@@ -325,18 +390,7 @@ def reset_worker_dir(worker_id: int) -> Path:
 def cleanup_on_exit() -> None:
     """Atexit handler: kill all Chrome processes and sweep CDP ports.
 
-    Register this with atexit.register() at application startup.
+    Register this with atexit.register() at application startup. Delegates to
+    kill_all_chrome, which protects handed-off browsers.
     """
-    with _chrome_lock:
-        procs = dict(_chrome_procs)
-        _chrome_procs.clear()
-
-    for wid, proc in procs.items():
-        if proc.poll() is None:
-            _kill_process_tree(proc.pid)
-        if (BASE_CDP_PORT + wid) not in _detached_ports:
-            _kill_on_port(BASE_CDP_PORT + wid)
-
-    # Sweep base port for any orphan (unless handed off to the human)
-    if BASE_CDP_PORT not in _detached_ports:
-        _kill_on_port(BASE_CDP_PORT)
+    kill_all_chrome()

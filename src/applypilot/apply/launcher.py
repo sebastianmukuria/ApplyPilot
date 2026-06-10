@@ -379,8 +379,12 @@ def _build_claude_cmd(model: str, mcp_config_path: str, dry_run: bool = False) -
     # prompt injection could run shell or exfiltrate the profile/.env. Deny all
     # built-in tools that touch the host or the network outside the browser.
     # Read stays allowed (used to inspect the tailored resume).
+    # browser_close is banned outright: Chrome's lifecycle belongs to the
+    # launcher, and an agent "tidying up" after a supervised hand-off closes
+    # the tab the human is still reviewing.
     disallowed = (
         "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,Task,KillShell,"
+        "mcp__playwright__browser_close,"
         + _GMAIL_DISALLOWED
     )
     if dry_run:
@@ -700,7 +704,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
         result = ""
         try:
             add_event(f"[W{worker_id}] Launching Chrome...")
-            chrome_proc = launch_chrome(worker_id, port=port, headless=headless)
+            # the actual port can shift if a handed-off Chrome still owns ours
+            chrome_proc, port = launch_chrome(worker_id, port=port, headless=headless)
 
             result, duration_ms = run_job(job, port=port, worker_id=worker_id,
                                             model=model, dry_run=dry_run)
