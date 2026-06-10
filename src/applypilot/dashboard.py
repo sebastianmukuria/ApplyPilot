@@ -231,6 +231,9 @@ def stop_run() -> str:
     ACTIVE_FILE.unlink(missing_ok=True)
     # the explicit nuke also forgets handed-off browsers (they're fair game here)
     (APP / "detached_ports.json").unlink(missing_ok=True)
+    # nothing is running anymore, so any in_progress lock is stale -- release
+    # them or the locked jobs stay invisible in the queue
+    c = db(); c.execute("UPDATE jobs SET apply_status=NULL WHERE apply_status='in_progress'"); c.commit()
     return ", ".join(killed) or "any orphaned apply processes"
 
 
@@ -676,7 +679,9 @@ with tab_q:
         sql += f" AND site IN ({','.join('?' for _ in sources)})"
         params += sources
     if not show_applied:
-        sql += " AND (apply_status IS NULL OR apply_status='failed')"
+        # in_progress stays visible (blue pill) -- a crashed run must never
+        # make a job silently vanish from the queue
+        sql += " AND (apply_status IS NULL OR apply_status IN ('failed', 'in_progress'))"
     if only_tailored:
         sql += " AND tailored_resume_path IS NOT NULL AND cover_letter_path IS NOT NULL"
     rows = [dict(r) for r in db().execute(sql, params).fetchall()]
