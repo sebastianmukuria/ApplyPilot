@@ -134,11 +134,11 @@ class LLMClient:
             payload["systemInstruction"] = {"parts": system_parts}
 
         url = f"{_GEMINI_NATIVE_BASE}/models/{self.model}:generateContent"
+        # key goes in a header, never the URL — request URLs end up in logs
         resp = self._client.post(
             url,
             json=payload,
-            headers={"Content-Type": "application/json"},
-            params={"key": self.api_key},
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
         )
         resp.raise_for_status()
         data = resp.json()
