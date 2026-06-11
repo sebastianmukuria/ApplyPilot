@@ -1,22 +1,24 @@
-<!-- logo here -->
-
-> **⚠️ ApplyPilot** is the original open-source project, created by [Pickle-Pixel](https://github.com/Pickle-Pixel) and first published on GitHub on **February 17, 2026**. We are **not affiliated** with applypilot.app, useapplypilot.com, or any other product using the "ApplyPilot" name. These sites are **not associated with this project** and may misrepresent what they offer. If you're looking for the autonomous, open-source job application agent — you're in the right place.
-
 # ApplyPilot
 
-**Applied to 1,000 jobs in 2 days. Fully autonomous. Open source.**
+**An autonomous job-application pipeline with a human-in-the-loop control panel.**
 
-[![PyPI version](https://img.shields.io/pypi/v/applypilot?color=blue)](https://pypi.org/project/applypilot/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/Pickle-Pixel/ApplyPilot?style=social)](https://github.com/Pickle-Pixel/ApplyPilot)
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/S6S01UL5IO)
+[![GitHub stars](https://img.shields.io/github/stars/sebastianmukuria/ApplyPilot?style=social)](https://github.com/sebastianmukuria/ApplyPilot)
 
+Discovers jobs across five boards plus Workday and direct career sites, scores
+them against your résumé, writes tailored cover letters, and fills out the
+applications in a real Chrome — **pinging your phone (Telegram) when it needs
+you** and handing you the open browser for the final Submit.
 
+![ApplyPilot control panel — queue, live run, stats, light & dark](docs/demo.gif)
 
+*([higher-quality video](docs/demo.mp4))*
 
-https://github.com/user-attachments/assets/7ee3417f-43d4-4245-9952-35df1e77f2df
-
+> Forked from [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot).
+> This fork adds the control-panel GUI above, supervised applies with human
+> hand-off + Telegram alerts, a fixed master-résumé mode, selectable salary
+> strategies, live LLM cost tracking, and a long list of safety fixes.
 
 ---
 
@@ -24,17 +26,31 @@ https://github.com/user-attachments/assets/7ee3417f-43d4-4245-9952-35df1e77f2df
 
 ApplyPilot is a 6-stage autonomous job application pipeline. It discovers jobs across 5+ boards, scores them against your resume with AI, tailors your resume per job, writes cover letters, and **submits applications for you**. It navigates forms, uploads documents, answers screening questions, all hands-free.
 
-Three commands. That's it.
+Install with one line (macOS / Linux):
 
 ```bash
-pip install applypilot
+curl -fsSL https://raw.githubusercontent.com/sebastianmukuria/ApplyPilot/fixes/pre-flight/install.sh | bash
+```
+
+Or from a clone:
+
+```bash
+git clone https://github.com/sebastianmukuria/ApplyPilot.git && cd ApplyPilot
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[gui]"
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
 playwright install chromium   # the headless browser used by enrich, smart-extract, and PDF rendering
+```
+
+Then:
+
+```bash
 applypilot init          # one-time setup: resume, profile, preferences, API keys
 applypilot doctor        # verify your setup — shows what's installed and what's missing
 applypilot run           # discover > enrich > score > tailor > cover letters
 applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
-applypilot apply         # autonomous browser-driven submission
+applypilot gui           # the control panel (queue, live runs, stats, answers)
+applypilot apply         # browser-driven applications (supervised by default)
 applypilot apply -w 3    # parallel apply (3 Chrome instances)
 applypilot apply --dry-run  # fill forms without submitting
 ```
@@ -55,11 +71,21 @@ applypilot gui
 ```
 
 A local Streamlit dashboard: the scored job queue with per-card apply/download
-actions, a live-run panel with "needs you" alerts, stats, and an answer-drafting
-tab grounded in your real projects. Supports two résumé modes — per-job AI
-tailoring, or a **fixed master résumé** (your one chosen PDF uploaded everywhere,
-with only cover letters generated per job). The panel's run/stop process controls
-are macOS/Linux only.
+actions, a live-run panel with "needs you" alerts, stats with live LLM cost
+tracking, and an answer-drafting tab grounded in your real projects. Supports
+two résumé modes — per-job AI tailoring, or a **fixed master résumé** (your one
+chosen PDF uploaded everywhere, with only cover letters generated per job) —
+and three salary-answer strategies (match the posting / leave blank / fixed
+amount). The panel's run/stop process controls are macOS/Linux only.
+
+### Telegram alerts
+
+Hook up a free Telegram bot (two-minute setup, [SETUP.md §7](SETUP.md)) and the
+apply agent pings your phone at the two moments it needs a human: when a
+CAPTCHA appears in the visible Chrome window, and when an application is fully
+filled and ready for your review. In supervised mode (the default) the agent
+**never clicks Submit** — it hands you the open browser and you finish at your
+own pace.
 
 ---
 
@@ -122,7 +148,8 @@ Each stage is independent. Run them all or pick what you need.
 
 | Component | What It Does |
 |-----------|-------------|
-| CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile, FunCaptcha). Without it, CAPTCHA-blocked applications just fail gracefully |
+| Telegram bot | Pings your phone when a run needs you: CAPTCHA in the window, or application filled and ready for review. Free; see [SETUP.md](SETUP.md) for the 2-minute setup |
+| CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile, FunCaptcha). Without it, you solve the CAPTCHA yourself in the visible window (the agent waits and pings you) |
 
 > **Note:** python-jobspy is installed separately with `--no-deps` because it pins an exact numpy version in its metadata that conflicts with pip's resolver. It works fine with modern numpy at runtime.
 
@@ -166,7 +193,9 @@ Generates a custom resume per job: reorders experience, emphasizes relevant skil
 Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
 
 ### Auto-Apply
-Claude Code launches a Chrome instance, navigates to each application page, detects the form type, fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions with AI, and submits. A live dashboard shows progress in real-time.
+Claude Code launches a Chrome instance, navigates to each application page, detects the form type, fills personal information and work history, uploads the resume and cover letter, and answers screening questions with AI. A live dashboard shows progress in real-time.
+
+**Supervised by default:** the agent fills everything, pings you on Telegram, then leaves the browser open and steps away — you review and click Submit yourself (the job is tracked as `handoff` until you confirm). Set `APPLYPILOT_SUPERVISED=0` to let it submit on its own.
 
 The Playwright MCP server is configured automatically at runtime per worker. No manual MCP setup needed.
 
@@ -199,6 +228,7 @@ applypilot apply --continuous           # Run forever, polling for new jobs
 applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job
 applypilot status                       # Pipeline statistics
+applypilot gui                          # Streamlit control panel (queue, runs, stats)
 applypilot dashboard                    # Open HTML results dashboard
 ```
 

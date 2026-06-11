@@ -6,6 +6,7 @@ readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 authors = [{name = "Pickle-Pixel"}]
+maintainers = [{name = "Sebastian Mukuria"}]
 keywords = ["job-search", "automation", "ai", "resume", "apply", "job-application"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -36,9 +37,9 @@ gui = ["streamlit>=1.58"]
 applypilot = "applypilot.cli:app"
 
 [project.urls]
-Homepage = "https://github.com/Pickle-Pixel/ApplyPilot"
-Repository = "https://github.com/Pickle-Pixel/ApplyPilot"
-Issues = "https://github.com/Pickle-Pixel/ApplyPilot/issues"
+Homepage = "https://github.com/sebastianmukuria/ApplyPilot"
+Repository = "https://github.com/sebastianmukuria/ApplyPilot"
+Issues = "https://github.com/sebastianmukuria/ApplyPilot/issues"
 
 [build-system]
 requires = ["hatchling"]
