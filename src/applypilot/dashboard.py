@@ -672,6 +672,35 @@ with tab_q:
         st.markdown(eyebrow("Live run"), unsafe_allow_html=True)
         st.caption("No run active — use Apply on any card below.")
 
+    # Handed-off jobs are waiting on the human -- keep them visible until
+    # confirmed, no matter how many runs have happened since.
+    _handoffs = [dict(r) for r in db().execute(
+        "SELECT * FROM jobs WHERE apply_status='handoff' "
+        "ORDER BY COALESCE(last_attempted_at,'') DESC").fetchall()]
+    if _handoffs:
+        st.markdown(eyebrow("Awaiting your confirmation"), unsafe_allow_html=True)
+        st.caption("Filled and handed to you in the browser. Did you click Submit? "
+                   "Confirm here, or re-run the apply.")
+        for hi, r in enumerate(_handoffs):
+            with st.container(border=True, key=f"card_h{hi}"):
+                comp = html.escape(r["company"] or "?")
+                title = html.escape(r["title"] or "")
+                st.markdown(
+                    f'<div class="ap-card-head"><span class="ap-score">{r["fit_score"] or "–"}</span>'
+                    f'<span class="ap-company">{comp}</span><span class="ap-role">&ndash; {title}</span>'
+                    f'<span class="ap-head-right">{pill("handoff")}</span></div>',
+                    unsafe_allow_html=True)
+                hb = st.columns([2, 3, 3, 8])
+                hb[0].link_button("Open", r["application_url"] or r["url"],
+                                  icon=":material/open_in_new:")
+                if hb[1].button("Mark applied", type="primary", icon=":material/check:",
+                                key=f"hm{hi}", help="I submitted this one."):
+                    mark_applied(r["url"]); st.rerun()
+                if hb[2].button("Re-apply", icon=":material/replay:", key=f"hr{hi}",
+                                help="Run the apply again from scratch."):
+                    write_env({"APPLYPILOT_SUPERVISED": "1" if supervised else "0"})
+                    launch_apply(r["url"], r["company"] or "job", model); st.rerun()
+
     st.divider()
     sql = "SELECT * FROM jobs WHERE fit_score >= ?"
     params = [min_score]
