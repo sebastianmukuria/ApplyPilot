@@ -358,6 +358,26 @@ def gui(
                     "--server.port", str(port)])
 
 
+@app.command(name="app")
+def app_command(
+    port: int = typer.Option(8765, "--port", "-p"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+) -> None:
+    """Launch the ApplyPilot v2 web app (API + UI)."""
+    _bootstrap()
+
+    try:
+        import uvicorn
+        from applypilot.server import create_app
+    except ImportError:
+        console.print("[red]FastAPI/Uvicorn are not installed.[/red] "
+                      "Install the app extra:  pip install 'applypilot[app]'")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]ApplyPilot app[/bold] -> http://{host}:{port}")
+    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+
+
 @app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""

@@ -45,3 +45,6 @@ Thumbs.db
 # internal working notes — not for distribution
 IMPLEMENTATION-PLAN.md
 PRE-FLIGHT-REVIEW.md
+
+# frontend
+web/app/node_modules/

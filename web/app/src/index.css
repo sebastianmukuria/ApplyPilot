@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/geist';
+
+@font-face {
+  font-family: 'Clash Display';
+  src: url('/fonts/ClashDisplay-Variable.woff2') format('woff2');
+  font-weight: 200 700;
+  font-display: swap;
+}
+
+@theme {
+  --font-display: 'Clash Display', 'Geist Variable', sans-serif;
+  --font-sans: 'Geist Variable', system-ui, sans-serif;
+
+  --color-canvas: #050505;
+  --color-core: #0a0a0a;
+  --color-ink: #f4f2ee;
+  --color-mut: #8a8a85;
+  --color-faint: #55554f;
+
+  --color-clay: #d97757;
+  --color-clay-hi: #e89070;
+  --color-sage: #7fb069;
+  --color-sky: #7aa7d9;
+
+  --ease-deck: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+html {
+  background: var(--color-canvas);
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* numerals everywhere read as instruments */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ---- fixed atmosphere: aurora mesh + film grain ---- */
+.aurora {
+  position: fixed; inset: -20%; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(38% 32% at 18% 12%, rgba(217, 119, 87, 0.09), transparent 70%),
+    radial-gradient(30% 28% at 85% 88%, rgba(52, 211, 153, 0.05), transparent 70%),
+    radial-gradient(24% 22% at 70% 20%, rgba(122, 167, 217, 0.045), transparent 70%);
+  animation: aurora-drift 120s var(--ease-deck) infinite alternate;
+}
+@keyframes aurora-drift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1); }
+  to   { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
+}
+.grain {
+  position: fixed; inset: 0; z-index: 50; pointer-events: none; opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora { animation: none; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* ---- double-bezel card primitives ---- */
+.shell {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 1.75rem;
+  padding: 0.375rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.core {
+  background: var(--color-core);
+  border-radius: calc(1.75rem - 0.375rem);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+  height: 100%;
+}
+
+/* terminal-style log well */
+.logwell {
+  font-size: 12px;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  color: #b9b7b0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+::selection { background: rgba(217, 119, 87, 0.35); }
