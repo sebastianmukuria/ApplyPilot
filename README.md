@@ -11,7 +11,7 @@ them against your résumé, writes tailored cover letters, and fills out the
 applications in a real Chrome — **pinging your phone (Telegram) when it needs
 you** and handing you the open browser for the final Submit.
 
-![ApplyPilot control panel — queue, live run, stats, light & dark](docs/demo.gif)
+![ApplyPilot Flight Deck — bento deck, animated queue, live charts, and the paper-plane easter egg](docs/demo.gif)
 
 *([higher-quality video](docs/demo.mp4))*
 
@@ -37,7 +37,7 @@ Or from a clone:
 ```bash
 git clone https://github.com/sebastianmukuria/ApplyPilot.git && cd ApplyPilot
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[gui]"
+pip install -e ".[app,gui]"
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
 playwright install chromium   # the headless browser used by enrich, smart-extract, and PDF rendering
 ```
@@ -49,7 +49,7 @@ applypilot init          # one-time setup: resume, profile, preferences, API key
 applypilot doctor        # verify your setup — shows what's installed and what's missing
 applypilot run           # discover > enrich > score > tailor > cover letters
 applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
-applypilot gui           # the control panel (queue, live runs, stats, answers)
+applypilot app           # the Flight Deck web app (queue, live runs, intel, answers)
 applypilot apply         # browser-driven applications (supervised by default)
 applypilot apply -w 3    # parallel apply (3 Chrome instances)
 applypilot apply --dry-run  # fill forms without submitting
@@ -63,20 +63,25 @@ applypilot apply --dry-run  # fill forms without submitting
 > entire install and configuration for you, and a one-line installer with a
 > double-clickable launcher for macOS.
 
-### Control panel
+### The Flight Deck (web app)
 
 ```bash
-pip install "applypilot[gui]"     # from a source checkout: pip install -e ".[gui]"
-applypilot gui
+pip install "applypilot[app]"     # from a source checkout: pip install -e ".[app]"
+applypilot app                    # → http://127.0.0.1:8765
 ```
 
-A local Streamlit dashboard: the scored job queue with per-card apply/download
-actions, a live-run panel with "needs you" alerts, stats with live LLM cost
-tracking, and an answer-drafting tab grounded in your real projects. Supports
-two résumé modes — per-job AI tailoring, or a **fixed master résumé** (your one
-chosen PDF uploaded everywhere, with only cover letters generated per job) —
-and three salary-answer strategies (match the posting / leave blank / fixed
-amount). The panel's run/stop process controls are macOS/Linux only.
+A local web app (FastAPI + React, no Node needed — assets ship prebuilt):
+an animated bento **deck** with the funnel, live-run terminal (SSE) and an
+awaiting-your-confirmation strip; a **queue** of scored job cards with
+in-place dossier previews, filters, and one-click apply; **intel** charts
+with live LLM cost tracking; and an **answers** studio grounded in your real
+projects. Supports two résumé modes — per-job AI tailoring or a **fixed
+master résumé** — and three salary-answer strategies (match the posting /
+leave blank / fixed amount). There's also a hidden easter egg for the
+observant. Run/stop process controls are macOS/Linux only.
+
+The previous Streamlit panel remains available as `applypilot gui`
+(`pip install "applypilot[gui]"`).
 
 ### Telegram alerts
 
@@ -228,7 +233,8 @@ applypilot apply --continuous           # Run forever, polling for new jobs
 applypilot apply --headless             # Headless browser mode
 applypilot apply --url URL              # Apply to a specific job
 applypilot status                       # Pipeline statistics
-applypilot gui                          # Streamlit control panel (queue, runs, stats)
+applypilot app                          # Flight Deck web app (queue, runs, intel)
+applypilot gui                          # legacy Streamlit panel
 applypilot dashboard                    # Open HTML results dashboard
 ```
 

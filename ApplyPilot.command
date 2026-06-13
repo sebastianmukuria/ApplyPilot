@@ -15,4 +15,4 @@ if [ ! -f "${APPLYPILOT_DIR:-$HOME/.applypilot}/profile.json" ]; then
   ./.venv/bin/applypilot init
 fi
 
-exec ./.venv/bin/applypilot gui
+exec ./.venv/bin/applypilot app

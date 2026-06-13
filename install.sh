@@ -39,8 +39,8 @@ say "Creating an isolated Python environment"
 PIP="$DEST/.venv/bin/pip"
 "$PIP" install --quiet --upgrade pip
 
-say "Installing ApplyPilot + control panel"
-"$PIP" install --quiet -e "$DEST[gui]"
+say "Installing ApplyPilot + Flight Deck"
+"$PIP" install --quiet -e "$DEST[app,gui]"
 
 say "Installing the job-board scraper"
 # jobspy pins an exact numpy in its metadata; it works fine with modern numpy,
@@ -63,7 +63,7 @@ Next steps
      (key from https://aistudio.google.com/apikey; LLM_MODEL=gemini-3.1-flash-lite)
   3) Start the control panel:
        macOS:    double-click  $DEST/ApplyPilot.command
-       any OS:   $DEST/.venv/bin/applypilot gui
+       any OS:   $DEST/.venv/bin/applypilot app
 
 Full guide: $DEST/SETUP.md
 EOF

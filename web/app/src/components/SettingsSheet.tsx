@@ -25,7 +25,7 @@ export function SettingsSheet({
   onModel: (m: string) => void
 }) {
   const [s, setS] = useState<Settings | null>(null)
-  const [savedAt, setSavedAt] = useState(0)
+  const [saved, setSaved] = useState(false)
 
   useEffect(() => {
     if (open) api.settings().then(setS).catch(() => {})
@@ -36,7 +36,8 @@ export function SettingsSheet({
     const next = { ...s, ...p }
     setS(next)
     await api.saveSettings(p)
-    setSavedAt(Date.now())
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
   }
 
   return (
@@ -62,7 +63,7 @@ export function SettingsSheet({
                 <Eyebrow>Run settings</Eyebrow>
                 <div className="flex items-center gap-3">
                   <AnimatePresence>
-                    {Date.now() - savedAt < 2000 && savedAt > 0 && (
+                    {saved && (
                       <motion.span
                         initial={{ opacity: 0, x: 6 }}
                         animate={{ opacity: 1, x: 0 }}

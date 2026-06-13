@@ -4,44 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { PaperPlaneTilt } from '@phosphor-icons/react'
 
-const KONAMI = [
-  'ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown',
-  'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a',
-]
-
-export function useFlightLog() {
-  const [taps, setTaps] = useState(0)
-  const [armed, setArmed] = useState(0) // increments to retrigger
-
-  // logo taps: 5 within 2.5s
-  useEffect(() => {
-    if (taps === 0) return
-    if (taps >= 5) {
-      setTaps(0)
-      setArmed((a) => a + 1)
-      return
-    }
-    const t = setTimeout(() => setTaps(0), 2500)
-    return () => clearTimeout(t)
-  }, [taps])
-
-  // konami listener
-  useEffect(() => {
-    let idx = 0
-    const onKey = (e: KeyboardEvent) => {
-      idx = e.key === KONAMI[idx] ? idx + 1 : e.key === KONAMI[0] ? 1 : 0
-      if (idx === KONAMI.length) {
-        idx = 0
-        setArmed((a) => a + 1)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
-  return { tap: () => setTaps((t) => t + 1), armed }
-}
-
 export function FlightLog({ trigger, applied }: { trigger: number; applied: number }) {
   const [show, setShow] = useState(false)
   const reduced = useMemo(

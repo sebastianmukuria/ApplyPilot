@@ -159,6 +159,7 @@ def apply(
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
     fail_reason: Optional[str] = typer.Option(None, "--fail-reason", help="Reason for --mark-failed."),
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
+    timing_report: bool = typer.Option(False, "--timing-report", help="Print aggregate apply timing from logs."),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
@@ -184,6 +185,11 @@ def apply(
         from applypilot.apply.launcher import reset_failed as do_reset
         count = do_reset()
         console.print(f"[green]Reset {count} failed job(s) for retry.[/green]")
+        return
+
+    if timing_report:
+        from applypilot.apply.launcher import print_timing_report
+        print_timing_report(console=console)
         return
 
     # --- Full apply mode ---

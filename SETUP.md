@@ -27,7 +27,7 @@ and paste this prompt:
 > Repo: https://github.com/sebastianmukuria/ApplyPilot — branch `fixes/pre-flight`.
 >
 > 1. Clone it to ~/ApplyPilot and read SETUP.md in the repo root. Follow its
->    install steps (Python 3.11+ venv, `pip install -e ".[gui]"`, the
+>    install steps (Python 3.11+ venv, `pip install -e ".[app,gui]"`, the
 >    python-jobspy install note, `playwright install chromium`). Install any
 >    missing prerequisites for me (git, Python 3.11+).
 > 2. Run `applypilot init` and help me complete it — ask me for my résumé
@@ -40,7 +40,7 @@ and paste this prompt:
 >    projects), work_authorization, and eeo_voluntary, following SETUP.md
 >    section 2.
 > 5. Run `applypilot doctor`, fix anything it flags, then launch
->    `applypilot gui` and give me a quick tour of the dashboard.
+>    `applypilot app` and give me a quick tour of the Flight Deck.
 >
 > Ask me for anything you need along the way.
 
@@ -62,7 +62,7 @@ opens the control panel.
 git clone -b fixes/pre-flight https://github.com/sebastianmukuria/ApplyPilot.git
 cd ApplyPilot
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[gui]"
+pip install -e ".[app,gui]"
 pip install --no-deps python-jobspy && pip install pydantic tls-client requests markdownify regex
 playwright install chromium
 ```
@@ -149,13 +149,13 @@ applypilot status         # see the funnel
 Stages can be run individually: `applypilot run tailor --min-score 8`,
 `applypilot run cover --min-score 8`, `applypilot run pdf` (re-render PDFs), etc.
 
-## 6. The control panel
+## 6. The Flight Deck (control panel)
 
 ```bash
-applypilot gui
+applypilot app
 ```
 
-Opens a browser dashboard at `http://localhost:8501`:
+Opens the web app at `http://127.0.0.1:8765`:
 
 - **Queue** — every scored job as a card: score, salary, status, flags
   (staffing agencies / marketplaces / low-comp get filtered out by default).
@@ -223,6 +223,29 @@ To get a phone notification when a run needs you:
    TELEGRAM_BOT_TOKEN=123456:ABC-your-token
    TELEGRAM_CHAT_ID=123456789
    ```
+
+## Running at volume (100+/day)
+
+The agent's fixed overhead is engineered down (pinned MCP server, Chrome
+reused between jobs, readiness polling instead of sleeps) and the prompt
+batches form-fills, so per-application time is dominated by the form itself.
+The operating mode that scales:
+
+1. **Fill the tank**: `applypilot run --min-score 8` then
+   `applypilot run cover --min-score 8` — everything score ≥8 is docs-ready.
+2. **Batch the applies**: `applypilot apply -w 3 --limit 30` runs three
+   browser workers in parallel. In supervised mode each worker hands off and
+   pauses for you — keep the Flight Deck open and work the
+   *awaiting-your-confirmation* strip as planes land. With
+   `APPLYPILOT_SUPERVISED=0` the agents submit on their own and the only
+   limit is Claude rate limits.
+3. **Measure**: every run writes a timing file;
+   `applypilot apply --timing-report` shows where the seconds go (startup,
+   model turns, per-tool breakdown) so you can spot regressions.
+
+Rough math: 3 workers × ~3-4 min/application ≈ 45-60 applications/hour
+unsupervised; supervised throughput is your review speed (~1 min each) —
+either way, 100+/day takes a morning, not a marathon.
 
 ## Troubleshooting
 

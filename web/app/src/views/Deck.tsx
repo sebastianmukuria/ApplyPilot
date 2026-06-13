@@ -173,6 +173,7 @@ function LiveRun({ run, onChanged }: { run: RunStatus | null; onChanged: () => v
       onEnd: onChanged,
     })
     return off
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onChanged is a stable useCallback; re-subscribing per identity churn would drop the stream
   }, [run?.active, run?.url])
 
   useEffect(() => {

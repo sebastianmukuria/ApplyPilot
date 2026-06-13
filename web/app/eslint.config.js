@@ -18,5 +18,10 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // kickoff fetches + debounced queries legitimately set loading state in
+      // effects; the async boundaries here don't cascade renders
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])
