@@ -84,3 +84,10 @@ def test_dangerous_builtin_tools_disallowed():
 def test_prompt_injection_guard_present(tmp_path, monkeypatch):
     out = _build(tmp_path, monkeypatch, dry_run=False)
     assert "suspected_prompt_injection" in out
+
+
+def test_speed_protocol_present(tmp_path, monkeypatch):
+    out = _build(tmp_path, monkeypatch, dry_run=False)
+    assert "== SPEED PROTOCOL ==" in out
+    assert "Fill in BATCHES" in out
+    assert "Never snapshot after every single field" in out

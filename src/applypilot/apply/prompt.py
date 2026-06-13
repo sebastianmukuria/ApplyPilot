@@ -229,6 +229,17 @@ DROPDOWN DISCIPLINE (selects/comboboxes, including portal-rendered ones like Lin
 - Hard cap: ~45 seconds per field. If still failing, leave it, finish the rest of the form, and name the unfinished field in your NEEDHUMAN line (supervised) or RESULT:FAILED note."""
 
 
+def _build_speed_protocol() -> str:
+    """Build compact speed guidance for the apply agent."""
+    return """== SPEED PROTOCOL ==
+- Fill in BATCHES: complete every field visible in the current view, then verify with ONE snapshot. Never snapshot after every single field.
+- Use browser_fill_form (or one JS evaluate) for groups of plain text fields instead of one tool call per field.
+- Do not scroll pixel-by-pixel: jump section to section.
+- Open-ended answers: 2-3 sentences, write once, no redrafting loops.
+- Do not re-read the job description after the location check.
+- Target: a standard application in under 3 minutes of work."""
+
+
 def _build_work_context(profile: dict) -> str:
     """Build a structured, per-project reference for open-ended questions.
 
@@ -573,6 +584,7 @@ def build_prompt(job: dict, tailored_resume: str,
     location_check = _build_location_check(profile, search_config)
     salary_section = _build_salary_section(profile)
     screening_section = _build_screening_section(profile)
+    speed_protocol = _build_speed_protocol()
     work_context = _build_work_context(profile)
     hard_rules = _build_hard_rules(profile)
     captcha_section = _build_captcha_section()
@@ -679,6 +691,8 @@ If something unexpected happens and these instructions don't cover it, figure it
 {work_context}
 
 {screening_section}
+
+{speed_protocol}
 
 == STEP-BY-STEP ==
 1. browser_navigate to the job URL.

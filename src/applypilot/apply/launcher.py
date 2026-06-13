@@ -22,6 +22,7 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.live import Live
+from rich.table import Table
 
 from applypilot import config
 from applypilot.database import get_connection
@@ -37,6 +38,10 @@ from applypilot.apply.dashboard import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Pinned Playwright MCP package version. Using @latest makes npx check the npm
+# registry on every apply job; APPLYPILOT_MCP_VERSION is a local escape hatch.
+PLAYWRIGHT_MCP_VERSION = "0.0.76"
 
 # Blocked sites loaded from config/sites.yaml
 def _load_blocked():
@@ -65,12 +70,16 @@ if platform.system() != "Windows":
 
 def _make_mcp_config(cdp_port: int) -> dict:
     """Build MCP config dict for a specific CDP port."""
+    mcp_version = os.environ.get("APPLYPILOT_MCP_VERSION", PLAYWRIGHT_MCP_VERSION).strip()
+    if not mcp_version:
+        mcp_version = PLAYWRIGHT_MCP_VERSION
     return {
         "mcpServers": {
             "playwright": {
                 "command": "npx",
                 "args": [
-                    "@playwright/mcp@latest",
+                    "-y",
+                    f"@playwright/mcp@{mcp_version}",
                     f"--cdp-endpoint=http://localhost:{cdp_port}",
                     f"--viewport-size={config.DEFAULTS['viewport']}",
                 ],
@@ -363,6 +372,334 @@ def reset_failed() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Timing instrumentation
+# ---------------------------------------------------------------------------
+
+_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+)
+
+
+def _display_tool_name(name: str) -> str:
+    """Normalize MCP tool names for logs and timing summaries."""
+    return (
+        name
+        .replace("mcp__playwright__", "")
+        .replace("mcp__gmail__", "gmail:")
+    )
+
+
+def _new_timing_state(spawn_ts: float) -> dict:
+    return {
+        "spawn_ts": spawn_ts,
+        "first_event_ts": None,
+        "last_event_ts": None,
+        "model_count": 0,
+        "model_total_s": 0.0,
+        "reported_turns": None,
+        "tokens": {},
+        "pending_tools": {},
+        "tool_calls": {},
+        "slowest": [],
+    }
+
+
+def _content_blocks(msg: dict) -> list[dict]:
+    message = msg.get("message")
+    content = message.get("content") if isinstance(message, dict) else msg.get("content")
+    if isinstance(content, dict):
+        return [content]
+    if isinstance(content, list):
+        return [b for b in content if isinstance(b, dict)]
+    return []
+
+
+def _record_usage_tokens(state: dict, usage: object) -> None:
+    if not isinstance(usage, dict):
+        return
+    tokens = state["tokens"]
+    for key in _TOKEN_KEYS:
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            tokens[key] = tokens.get(key, 0) + int(value)
+
+
+def _observe_timing_event(state: dict, msg: dict, now: float) -> None:
+    """Update timing state from one parsed Claude stream-json event."""
+    if state["first_event_ts"] is None:
+        state["first_event_ts"] = now
+
+    msg_type = msg.get("type")
+    if msg_type == "assistant":
+        prev = state["last_event_ts"]
+        turn_start = state["spawn_ts"] if prev is None else prev
+        state["model_count"] += 1
+        state["model_total_s"] += max(0.0, now - turn_start)
+
+    _record_usage_tokens(state, msg.get("usage"))
+    message = msg.get("message")
+    if isinstance(message, dict):
+        _record_usage_tokens(state, message.get("usage"))
+
+    if msg_type == "result":
+        turns = msg.get("num_turns")
+        if isinstance(turns, int):
+            state["reported_turns"] = turns
+
+    for block in _content_blocks(msg):
+        block_type = block.get("type")
+        if block_type == "tool_use":
+            tool_id = block.get("id") or block.get("tool_use_id")
+            if not tool_id:
+                continue
+            state["pending_tools"][tool_id] = {
+                "name": _display_tool_name(str(block.get("name", "unknown"))),
+                "start": now,
+            }
+        elif block_type == "tool_result":
+            tool_id = block.get("tool_use_id") or block.get("id")
+            if not tool_id:
+                continue
+            pending = state["pending_tools"].pop(tool_id, None)
+            if not pending:
+                continue
+            duration = max(0.0, now - pending["start"])
+            name = pending["name"]
+            bucket = state["tool_calls"].setdefault(name, {"count": 0, "total_s": 0.0})
+            bucket["count"] += 1
+            bucket["total_s"] += duration
+            state["slowest"].append({
+                "name": name,
+                "duration_s": duration,
+                "tool_use_id": tool_id,
+            })
+
+    state["last_event_ts"] = now
+
+
+def _finish_timing_summary(state: dict, job_url: str, result: str,
+                           finished_ts: float) -> dict:
+    startup = None
+    if state["first_event_ts"] is not None:
+        startup = max(0.0, state["first_event_ts"] - state["spawn_ts"])
+
+    model_count = state["model_count"]
+    if not model_count and state["reported_turns"]:
+        model_count = state["reported_turns"]
+
+    model_turns: dict = {
+        "count": int(model_count or 0),
+        "total_s": round(float(state["model_total_s"]), 3),
+    }
+    if state["tokens"]:
+        model_turns["tokens"] = dict(sorted(state["tokens"].items()))
+    if state["reported_turns"] is not None:
+        model_turns["reported_count"] = state["reported_turns"]
+
+    tool_calls = {
+        name: {
+            "count": int(data["count"]),
+            "total_s": round(float(data["total_s"]), 3),
+        }
+        for name, data in sorted(state["tool_calls"].items())
+    }
+    slowest = sorted(state["slowest"], key=lambda x: x["duration_s"], reverse=True)[:10]
+    for item in slowest:
+        item["duration_s"] = round(float(item["duration_s"]), 3)
+
+    return {
+        "job_url": job_url,
+        "total_s": round(max(0.0, finished_ts - state["spawn_ts"]), 3),
+        "startup_s": round(startup, 3) if startup is not None else None,
+        "model_turns": model_turns,
+        "tool_calls": tool_calls,
+        "top_slowest": slowest,
+        "result": result,
+    }
+
+
+def summarize_stream_json_events(records, *, spawn_ts: float = 0.0,
+                                 finished_ts: float | None = None,
+                                 job_url: str = "",
+                                 result: str = "") -> dict:
+    """Pure timing parser for Claude stream-json events.
+
+    ``records`` is an iterable of ``(timestamp, event)`` pairs where event is
+    either a parsed dict or one JSON line. Invalid JSON strings are ignored.
+    """
+    state = _new_timing_state(spawn_ts)
+    last_ts = spawn_ts
+    for ts, raw in records:
+        if isinstance(raw, str):
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+        elif isinstance(raw, dict):
+            msg = raw
+        else:
+            continue
+        _observe_timing_event(state, msg, ts)
+        last_ts = ts
+    return _finish_timing_summary(
+        state,
+        job_url=job_url,
+        result=result,
+        finished_ts=finished_ts if finished_ts is not None else last_ts,
+    )
+
+
+def _write_timing_summary(state: dict, *, job_url: str, worker_id: int,
+                          result: str, finished_ts: float) -> None:
+    try:
+        summary = _finish_timing_summary(state, job_url, result, finished_ts)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = config.LOG_DIR / f"timing_{ts}_w{worker_id}.json"
+        config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        config.write_private_text(path, json.dumps(summary, indent=2, sort_keys=True))
+    except Exception:
+        logger.debug("Failed to write timing summary", exc_info=True)
+
+
+def _result_line_from_output(output: str, fallback: str) -> str:
+    for line in output.splitlines():
+        if "RESULT:" in line:
+            return line.strip()
+    return fallback
+
+
+def load_timing_reports(log_dir: Path | None = None) -> list[dict]:
+    """Load all timing_*.json files from a log directory."""
+    root = Path(log_dir or config.LOG_DIR)
+    reports: list[dict] = []
+    for path in sorted(root.glob("timing_*_w*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data["_file"] = str(path)
+                reports.append(data)
+        except Exception:
+            logger.debug("Skipping unreadable timing report: %s", path, exc_info=True)
+    return reports
+
+
+def _model_turn_parts(report: dict) -> tuple[int, float]:
+    model_turns = report.get("model_turns") or {}
+    if isinstance(model_turns, dict):
+        return int(model_turns.get("count") or 0), float(model_turns.get("total_s") or 0.0)
+    if isinstance(model_turns, int):
+        return model_turns, 0.0
+    return 0, 0.0
+
+
+def aggregate_timing_reports(reports: list[dict]) -> dict:
+    """Aggregate timing summaries for CLI reporting and tests."""
+    count = len(reports)
+    total_s = sum(float(r.get("total_s") or 0.0) for r in reports)
+    startup_values = [
+        float(r["startup_s"]) for r in reports
+        if r.get("startup_s") is not None
+    ]
+    model_counts = 0
+    model_total_s = 0.0
+    tools: dict[str, dict] = {}
+    for report in reports:
+        c, total = _model_turn_parts(report)
+        model_counts += c
+        model_total_s += total
+        for name, data in (report.get("tool_calls") or {}).items():
+            bucket = tools.setdefault(name, {"count": 0, "total_s": 0.0})
+            bucket["count"] += int(data.get("count") or 0)
+            bucket["total_s"] += float(data.get("total_s") or 0.0)
+
+    tool_breakdown = {
+        name: {
+            "count": data["count"],
+            "total_s": round(data["total_s"], 3),
+            "avg_s": round(data["total_s"] / data["count"], 3) if data["count"] else 0.0,
+        }
+        for name, data in sorted(
+            tools.items(),
+            key=lambda item: item[1]["total_s"],
+            reverse=True,
+        )
+    }
+    slowest_runs = sorted(
+        (
+            {
+                "job_url": r.get("job_url", ""),
+                "total_s": float(r.get("total_s") or 0.0),
+                "result": r.get("result", ""),
+                "file": r.get("_file", ""),
+            }
+            for r in reports
+        ),
+        key=lambda r: r["total_s"],
+        reverse=True,
+    )[:3]
+
+    return {
+        "runs": count,
+        "avg_total_s": round(total_s / count, 3) if count else 0.0,
+        "avg_startup_s": round(sum(startup_values) / len(startup_values), 3) if startup_values else 0.0,
+        "avg_model_turn_s": round(model_total_s / model_counts, 3) if model_counts else 0.0,
+        "model_turns": model_counts,
+        "tool_calls": tool_breakdown,
+        "slowest_runs": slowest_runs,
+    }
+
+
+def print_timing_report(log_dir: Path | None = None,
+                        console: Console | None = None) -> None:
+    """Print an aggregate timing report from timing_*.json files."""
+    console = console or Console()
+    reports = load_timing_reports(log_dir)
+    if not reports:
+        console.print("[yellow]No timing reports found.[/yellow]")
+        return
+
+    aggregate = aggregate_timing_reports(reports)
+
+    summary = Table(title="ApplyPilot Timing Summary")
+    summary.add_column("Metric")
+    summary.add_column("Value", justify="right")
+    summary.add_row("Runs", str(aggregate["runs"]))
+    summary.add_row("Avg total", f"{aggregate['avg_total_s']:.1f}s")
+    summary.add_row("Avg startup", f"{aggregate['avg_startup_s']:.1f}s")
+    summary.add_row("Avg model turn", f"{aggregate['avg_model_turn_s']:.1f}s")
+    summary.add_row("Model turns", str(aggregate["model_turns"]))
+    console.print(summary)
+
+    tools = Table(title="Tool Calls")
+    tools.add_column("Tool")
+    tools.add_column("Calls", justify="right")
+    tools.add_column("Total", justify="right")
+    tools.add_column("Avg", justify="right")
+    for name, data in aggregate["tool_calls"].items():
+        tools.add_row(
+            name,
+            str(data["count"]),
+            f"{data['total_s']:.1f}s",
+            f"{data['avg_s']:.1f}s",
+        )
+    console.print(tools)
+
+    slowest = Table(title="3 Slowest Runs")
+    slowest.add_column("Total", justify="right")
+    slowest.add_column("Result")
+    slowest.add_column("Job URL")
+    for run in aggregate["slowest_runs"]:
+        slowest.add_row(f"{run['total_s']:.1f}s", run["result"], run["job_url"])
+    console.print(slowest)
+
+
+# ---------------------------------------------------------------------------
 # Per-job execution
 # ---------------------------------------------------------------------------
 
@@ -467,6 +804,8 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     )
 
     start = time.time()
+    timing_state = _new_timing_state(start)
+    timing_result = ""
     stats: dict = {}
     proc = None
 
@@ -482,6 +821,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             env=env,
             cwd=str(worker_dir),
         )
+        timing_state = _new_timing_state(time.time())
         with _claude_lock:
             _claude_procs[worker_id] = proc
 
@@ -498,6 +838,10 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     continue
                 try:
                     msg = json.loads(line)
+                    try:
+                        _observe_timing_event(timing_state, msg, time.time())
+                    except Exception:
+                        logger.debug("Timing instrumentation failed for stream event", exc_info=True)
                     msg_type = msg.get("type")
                     if msg_type == "assistant":
                         for block in msg.get("message", {}).get("content", []):
@@ -509,11 +853,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                                     reason = block["text"].split("NEEDHUMAN:", 1)[1].strip().split("\n")[0][:160]
                                     _notify_human(worker_id, reason or "an application needs your input")
                             elif bt == "tool_use":
-                                name = (
-                                    block.get("name", "")
-                                    .replace("mcp__playwright__", "")
-                                    .replace("mcp__gmail__", "gmail:")
-                                )
+                                name = _display_tool_name(block.get("name", ""))
                                 inp = block.get("input", {})
                                 if "url" in inp:
                                     desc = f"{name} {inp['url'][:60]}"
@@ -551,6 +891,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
         proc = None
 
         if returncode and returncode < 0:
+            timing_result = "skipped"
             return "skipped", int((time.time() - start) * 1000)
 
         output = "\n".join(text_parts)
@@ -572,6 +913,7 @@ def run_job(job: dict, port: int, worker_id: int = 0,
 
         for result_status in ["DRYRUN", "HANDOFF", "APPLIED", "EXPIRED", "CAPTCHA", "LOGIN_ISSUE"]:
             if f"RESULT:{result_status}" in output:
+                timing_result = _result_line_from_output(output, f"RESULT:{result_status}")
                 add_event(f"[W{worker_id}] {result_status} ({elapsed}s): {job['title'][:30]}")
                 update_state(worker_id, status=result_status.lower(),
                              last_action=f"{result_status} ({elapsed}s)")
@@ -588,16 +930,20 @@ def run_job(job: dict, port: int, worker_id: int = 0,
                     reason = _clean_reason(reason)
                     PROMOTE_TO_STATUS = {"captcha", "expired", "login_issue"}
                     if reason in PROMOTE_TO_STATUS:
+                        timing_result = out_line.strip()
                         add_event(f"[W{worker_id}] {reason.upper()} ({elapsed}s): {job['title'][:30]}")
                         update_state(worker_id, status=reason,
                                      last_action=f"{reason.upper()} ({elapsed}s)")
                         return reason, duration_ms
+                    timing_result = out_line.strip()
                     add_event(f"[W{worker_id}] FAILED ({elapsed}s): {reason[:30]}")
                     update_state(worker_id, status="failed",
                                  last_action=f"FAILED: {reason[:25]}")
                     return f"failed:{reason}", duration_ms
+            timing_result = "RESULT:FAILED:unknown"
             return "failed:unknown", duration_ms
 
+        timing_result = "RESULT:FAILED:no_result_line"
         add_event(f"[W{worker_id}] NO RESULT ({elapsed}s)")
         update_state(worker_id, status="failed", last_action=f"no result ({elapsed}s)")
         return "failed:no_result_line", duration_ms
@@ -605,15 +951,24 @@ def run_job(job: dict, port: int, worker_id: int = 0,
     except subprocess.TimeoutExpired:
         duration_ms = int((time.time() - start) * 1000)
         elapsed = int(time.time() - start)
+        timing_result = "RESULT:FAILED:timeout"
         add_event(f"[W{worker_id}] TIMEOUT ({elapsed}s)")
         update_state(worker_id, status="failed", last_action=f"TIMEOUT ({elapsed}s)")
         return "failed:timeout", duration_ms
     except Exception as e:
         duration_ms = int((time.time() - start) * 1000)
+        timing_result = f"RESULT:FAILED:{str(e)[:100]}"
         add_event(f"[W{worker_id}] ERROR: {str(e)[:40]}")
         update_state(worker_id, status="failed", last_action=f"ERROR: {str(e)[:25]}")
         return f"failed:{str(e)[:100]}", duration_ms
     finally:
+        _write_timing_summary(
+            timing_state,
+            job_url=job.get("application_url") or job.get("url", ""),
+            worker_id=worker_id,
+            result=timing_result or "unknown",
+            finished_ts=time.time(),
+        )
         with _claude_lock:
             _claude_procs.pop(worker_id, None)
         if proc is not None and proc.poll() is None:
@@ -678,110 +1033,137 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
     # head of the queue and would be re-selected forever. Track what we've
     # already dry-run this session and stop when the queue only repeats.
     seen_urls: set[str] = set()
+    chrome_proc = None
+    browser_used = False
+    relaunch_before_next = False
 
-    while not _stop_event.is_set():
-        if not continuous and jobs_done >= limit:
-            break
-
-        update_state(worker_id, status="idle", job_title="", company="",
-                     last_action="waiting for job", actions=0)
-
-        job = acquire_job(target_url=target_url, min_score=min_score,
-                          worker_id=worker_id)
-        if dry_run and job and job["url"] in seen_urls:
-            release_lock(job["url"])
-            add_event(f"[W{worker_id}] Dry-run queue exhausted")
-            update_state(worker_id, status="done", last_action="dry-run done")
-            break
-        if not job:
-            if not continuous:
-                add_event(f"[W{worker_id}] Queue empty")
-                update_state(worker_id, status="done", last_action="queue empty")
+    try:
+        while not _stop_event.is_set():
+            if not continuous and jobs_done >= limit:
                 break
-            empty_polls += 1
-            update_state(worker_id, status="idle",
-                         last_action=f"polling ({empty_polls})")
-            if empty_polls == 1:
-                add_event(f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
-            # Use Event.wait for interruptible sleep
-            if _stop_event.wait(timeout=POLL_INTERVAL):
-                break  # Stop was requested during wait
-            continue
 
-        empty_polls = 0
-        seen_urls.add(job["url"])
+            update_state(worker_id, status="idle", job_title="", company="",
+                         last_action="waiting for job", actions=0)
 
-        chrome_proc = None
-        result = ""
-        try:
-            add_event(f"[W{worker_id}] Launching Chrome...")
-            # the actual port can shift if a handed-off Chrome still owns ours
-            chrome_proc, port = launch_chrome(worker_id, port=port, headless=headless)
-
-            result, duration_ms = run_job(job, port=port, worker_id=worker_id,
-                                            model=model, dry_run=dry_run)
-
-            if result == "skipped":
+            job = acquire_job(target_url=target_url, min_score=min_score,
+                              worker_id=worker_id)
+            if dry_run and job and job["url"] in seen_urls:
                 release_lock(job["url"])
-                add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
+                add_event(f"[W{worker_id}] Dry-run queue exhausted")
+                update_state(worker_id, status="done", last_action="dry-run done")
+                break
+            if not job:
+                if not continuous:
+                    add_event(f"[W{worker_id}] Queue empty")
+                    update_state(worker_id, status="done", last_action="queue empty")
+                    break
+                empty_polls += 1
+                update_state(worker_id, status="idle",
+                             last_action=f"polling ({empty_polls})")
+                if empty_polls == 1:
+                    add_event(f"[W{worker_id}] Queue empty, polling every {POLL_INTERVAL}s...")
+                # Use Event.wait for interruptible sleep
+                if _stop_event.wait(timeout=POLL_INTERVAL):
+                    break  # Stop was requested during wait
                 continue
-            elif result == "dryrun":
-                # No DB side effects; release the lock and fall through to the
-                # loop tail (jobs_done/target_url) -- do NOT `continue`.
+
+            empty_polls = 0
+            seen_urls.add(job["url"])
+
+            result = ""
+            try:
+                if chrome_proc is None or chrome_proc.poll() is not None:
+                    add_event(f"[W{worker_id}] Launching Chrome...")
+                    # the actual port can shift if a handed-off Chrome still owns ours
+                    chrome_proc, port = launch_chrome(worker_id, port=port, headless=headless)
+                    browser_used = False
+                    relaunch_before_next = False
+                elif relaunch_before_next:
+                    add_event(f"[W{worker_id}] Relaunching Chrome after previous failure...")
+                    cleanup_worker(worker_id, chrome_proc)
+                    chrome_proc = None
+                    chrome_proc, port = launch_chrome(worker_id, port=port, headless=headless)
+                    browser_used = False
+                    relaunch_before_next = False
+                elif browser_used:
+                    add_event(f"[W{worker_id}] Resetting browser tabs...")
+                    if not chrome.reset_tabs(port):
+                        add_event(f"[W{worker_id}] Tab reset failed; relaunching Chrome...")
+                        cleanup_worker(worker_id, chrome_proc)
+                        chrome_proc = None
+                        chrome_proc, port = launch_chrome(worker_id, port=port, headless=headless)
+                        browser_used = False
+
+                result, duration_ms = run_job(job, port=port, worker_id=worker_id,
+                                                model=model, dry_run=dry_run)
+                browser_used = True
+                relaunch_before_next = result not in {"applied", "dryrun"}
+
+                if result == "skipped":
+                    release_lock(job["url"])
+                    add_event(f"[W{worker_id}] Skipped: {job['title'][:30]}")
+                    continue
+                elif result == "dryrun":
+                    # No DB side effects; release the lock and fall through to the
+                    # loop tail (jobs_done/target_url) -- do NOT `continue`.
+                    release_lock(job["url"])
+                    add_event(f"[W{worker_id}] DRY RUN OK: {job['title'][:30]}")
+                elif result == "handoff":
+                    # Supervised hand-off: agent filled the form and left the browser
+                    # open for the human to finish (review, assessment, submit). Detach
+                    # Chrome so it is NOT killed by worker cleanup.
+                    chrome.detach_worker(worker_id)
+                    chrome_proc = None
+                    browser_used = False
+                    relaunch_before_next = False
+                    mark_result(job["url"], "handoff")
+                    add_event(f"[W{worker_id}] Handed off -- browser left open for you: {job['title'][:30]}")
+                elif result == "applied" and dry_run:
+                    # Agent ignored the dry-run instruction and claimed APPLIED.
+                    # Do NOT mark applied -- release and warn.
+                    release_lock(job["url"])
+                    logger.warning("Worker %d: agent emitted APPLIED during dry-run; not marking", worker_id)
+                    add_event(f"[W{worker_id}] Dry-run: ignored stray APPLIED")
+                elif result == "applied":
+                    mark_result(job["url"], "applied", duration_ms=duration_ms)
+                    applied += 1
+                    update_state(worker_id, jobs_applied=applied,
+                                 jobs_done=applied + failed)
+                else:
+                    reason = result.split(":", 1)[-1] if ":" in result else result
+                    mark_result(job["url"], "failed", reason,
+                                permanent=_is_permanent_failure(result),
+                                duration_ms=duration_ms)
+                    failed += 1
+                    update_state(worker_id, jobs_failed=failed,
+                                 jobs_done=applied + failed)
+
+            except KeyboardInterrupt:
+                relaunch_before_next = True
                 release_lock(job["url"])
-                add_event(f"[W{worker_id}] DRY RUN OK: {job['title'][:30]}")
-            elif result == "handoff":
-                # Supervised hand-off: agent filled the form and left the browser
-                # open for the human to finish (review, assessment, submit). Detach
-                # Chrome so it is NOT killed, and skip the finally cleanup.
-                chrome.detach_worker(worker_id)
-                chrome_proc = None
-                mark_result(job["url"], "handoff")
-                add_event(f"[W{worker_id}] Handed off -- browser left open for you: {job['title'][:30]}")
-            elif result == "applied" and dry_run:
-                # Agent ignored the dry-run instruction and claimed APPLIED.
-                # Do NOT mark applied -- release and warn.
+                if _stop_event.is_set():
+                    break
+                add_event(f"[W{worker_id}] Job skipped (Ctrl+C)")
+                continue
+            except Exception as e:
+                relaunch_before_next = True
+                logger.exception("Worker %d launcher error", worker_id)
+                add_event(f"[W{worker_id}] Launcher error: {str(e)[:40]}")
                 release_lock(job["url"])
-                logger.warning("Worker %d: agent emitted APPLIED during dry-run; not marking", worker_id)
-                add_event(f"[W{worker_id}] Dry-run: ignored stray APPLIED")
-            elif result == "applied":
-                mark_result(job["url"], "applied", duration_ms=duration_ms)
-                applied += 1
-                update_state(worker_id, jobs_applied=applied,
-                             jobs_done=applied + failed)
-            else:
-                reason = result.split(":", 1)[-1] if ":" in result else result
-                mark_result(job["url"], "failed", reason,
-                            permanent=_is_permanent_failure(result),
-                            duration_ms=duration_ms)
                 failed += 1
-                update_state(worker_id, jobs_failed=failed,
-                             jobs_done=applied + failed)
+                update_state(worker_id, jobs_failed=failed)
 
-        except KeyboardInterrupt:
-            release_lock(job["url"])
-            if _stop_event.is_set():
+            jobs_done += 1
+            # A hand-off ends the run: the human is now busy finishing that one
+            # (review/assessment/submit) in the browser we left open. Re-run apply
+            # to get the next job once they're done.
+            if target_url or result == "handoff":
+                if result == "handoff":
+                    add_event(f"[W{worker_id}] Stopping after hand-off -- finish it, then re-run apply for the next")
                 break
-            add_event(f"[W{worker_id}] Job skipped (Ctrl+C)")
-            continue
-        except Exception as e:
-            logger.exception("Worker %d launcher error", worker_id)
-            add_event(f"[W{worker_id}] Launcher error: {str(e)[:40]}")
-            release_lock(job["url"])
-            failed += 1
-            update_state(worker_id, jobs_failed=failed)
-        finally:
-            if chrome_proc:
-                cleanup_worker(worker_id, chrome_proc)
-
-        jobs_done += 1
-        # A hand-off ends the run: the human is now busy finishing that one
-        # (review/assessment/submit) in the browser we left open. Re-run apply
-        # to get the next job once they're done.
-        if target_url or result == "handoff":
-            if result == "handoff":
-                add_event(f"[W{worker_id}] Stopping after hand-off -- finish it, then re-run apply for the next")
-            break
+    finally:
+        if chrome_proc:
+            cleanup_worker(worker_id, chrome_proc)
 
     update_state(worker_id, status="done", last_action="finished")
     return applied, failed

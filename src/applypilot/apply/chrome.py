@@ -14,6 +14,8 @@ import threading
 import time
 from pathlib import Path
 
+import httpx
+
 from applypilot import config
 
 logger = logging.getLogger(__name__)
@@ -224,6 +226,61 @@ def _suppress_restore_nag(profile_dir: Path) -> None:
 # Chrome launch / kill
 # ---------------------------------------------------------------------------
 
+def _is_detached_port(port: int) -> bool:
+    """Return True if a CDP port belongs to a handed-off browser."""
+    return port in _detached_ports or port in _read_detached()
+
+
+def _wait_for_cdp(port: int, timeout_s: float = 6.0,
+                  interval_s: float = 0.25) -> bool:
+    """Poll Chrome's CDP version endpoint until it is ready."""
+    deadline = time.monotonic() + timeout_s
+    url = f"http://localhost:{port}/json/version"
+    while time.monotonic() < deadline:
+        try:
+            resp = httpx.get(url, timeout=min(1.0, interval_s))
+            if resp.status_code < 400:
+                return True
+        except Exception:
+            pass
+        time.sleep(interval_s)
+    return False
+
+
+def reset_tabs(port: int) -> bool:
+    """Close all page targets on a reusable Chrome CDP port.
+
+    Handed-off browser ports are protected: they must never be tab-reset, since
+    the human is reviewing that browser. Returns False on any failure so callers
+    can fall back to killing and relaunching their own worker Chrome.
+    """
+    if _is_detached_port(port):
+        logger.warning("Refusing to reset detached Chrome port %d", port)
+        return False
+
+    try:
+        resp = httpx.get(f"http://localhost:{port}/json/list", timeout=5.0)
+        resp.raise_for_status()
+        targets = resp.json()
+        if not isinstance(targets, list):
+            return False
+
+        for target in targets:
+            if not isinstance(target, dict) or target.get("type") != "page":
+                continue
+            target_id = target.get("id")
+            if not target_id:
+                continue
+            close_resp = httpx.get(
+                f"http://localhost:{port}/json/close/{target_id}",
+                timeout=5.0,
+            )
+            close_resp.raise_for_status()
+        return True
+    except Exception:
+        logger.debug("Failed to reset Chrome tabs on port %d", port, exc_info=True)
+        return False
+
 def launch_chrome(worker_id: int, port: int | None = None,
                   headless: bool = False) -> tuple[subprocess.Popen, int]:
     """Launch a Chrome instance with remote debugging for a worker.
@@ -300,8 +357,14 @@ def launch_chrome(worker_id: int, port: int | None = None,
         _chrome_procs[worker_id] = proc
         _worker_ports[worker_id] = port
 
-    # Give Chrome time to start and open the debug port
-    time.sleep(3)
+    if not _wait_for_cdp(port):
+        if proc.poll() is None:
+            _kill_process_tree(proc.pid)
+        with _chrome_lock:
+            _chrome_procs.pop(worker_id, None)
+            _worker_ports.pop(worker_id, None)
+        raise RuntimeError(f"Chrome CDP port {port} did not become ready within 6s")
+
     logger.info("[worker-%d] Chrome started on port %d (pid %d)",
                 worker_id, port, proc.pid)
     return proc, port
@@ -318,6 +381,7 @@ def cleanup_worker(worker_id: int, process: subprocess.Popen | None) -> None:
         _kill_process_tree(process.pid)
     with _chrome_lock:
         _chrome_procs.pop(worker_id, None)
+        _worker_ports.pop(worker_id, None)
     logger.info("[worker-%d] Chrome cleaned up", worker_id)
 
 
