@@ -4,6 +4,7 @@ import { motion } from 'motion/react'
 import { ArrowSquareOut, Check, Play } from '@phosphor-icons/react'
 import { api, type Job, type RunsResponse, type Stats } from '../lib/api'
 import { stagger } from '../lib/motion'
+import { PipelineBar } from '../components/PipelineBar'
 import { RunStack } from '../components/RunStack'
 import { Bezel, CountUp, Eyebrow, GhostAction, IslandButton, ScoreChip } from '../components/ui'
 
@@ -105,6 +106,8 @@ export function Deck({
           ))}
         </div>
       </Bezel>
+
+      <PipelineBar onChanged={onChanged} />
 
       {/* live run + handoffs */}
       <div className="mt-4 grid gap-4 lg:grid-cols-12">

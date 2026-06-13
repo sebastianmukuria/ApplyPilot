@@ -11,6 +11,7 @@ import re
 import shutil
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote
@@ -22,11 +23,20 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from applypilot import panel
+from applypilot.llm import ALLOWED_PROVIDERS, resolve_provider_name
+from applypilot import ops, panel
+
+VALID_OUTCOMES = {"responded", "screen", "interview", "offer", "rejected"}
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 class UrlBody(BaseModel):
     url: str
+
+
+class OutcomeBody(BaseModel):
+    url: str
+    outcome: str = ""
 
 
 class RunBody(BaseModel):
@@ -48,6 +58,7 @@ class SettingsUpdate(BaseModel):
     fixed_resume: bool | None = None
     salary_mode: str | None = None
     salary_fixed: str | None = None
+    cover_provider: str | None = None
     ntfy_topic: str | None = None
     webhook_url: str | None = None
     discord_webhook_url: str | None = None
@@ -55,6 +66,41 @@ class SettingsUpdate(BaseModel):
     macos_banner: bool | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    digest_hour: str | None = None
+    gemini_api_key: str | None = None
+
+
+class PipelineRunBody(BaseModel):
+    stages: list[str] = Field(default_factory=lambda: ["all"])
+    min_score: int = 7
+    workers: int = 2
+
+
+class AutopilotBody(BaseModel):
+    count: int = Field(5, ge=1, le=30)
+    model: str = "sonnet"
+
+
+class BackfillBody(BaseModel):
+    days: int = Field(90, ge=1, le=365)
+
+
+class PersonalBody(BaseModel):
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    city: str | None = None
+    province_state: str | None = None
+    country: str | None = None
+    linkedin_url: str | None = None
+    github_url: str | None = None
+    website_url: str | None = None
+
+
+class SearchesBody(BaseModel):
+    titles: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    remote: bool = True
 
 
 class WorkContextBody(BaseModel):
@@ -73,7 +119,18 @@ class AnswerBody(BaseModel):
 def create_app() -> FastAPI:
     """Create the ApplyPilot API app."""
     _ensure_storage()
-    app = FastAPI(title="ApplyPilot API")
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _lifespan(app):
+        task = asyncio.create_task(_background_ticker())
+        try:
+            yield
+        finally:
+            task.cancel()
+
+    app = FastAPI(title="ApplyPilot API", lifespan=_lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],
@@ -143,6 +200,10 @@ def create_app() -> FastAPI:
         panel.reset_job(body.url)
         return {"ok": True}
 
+    @app.post("/api/jobs/outcome")
+    def api_job_outcome(body: OutcomeBody):
+        return _set_job_outcome(body.url, body.outcome)
+
     @app.post("/api/jobs/hide")
     def hide_job(body: UrlBody):
         hidden = panel.load_hidden()
@@ -158,12 +219,12 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/files/resume")
-    def resume_file(url: str, inline: bool = False):
-        return _pdf_response(url, "tailored_resume_path", "resume", inline=inline)
+    def resume_file(url: str, inline: bool = False, fmt: Literal["pdf", "docx"] = "pdf"):
+        return _document_response(url, "tailored_resume_path", "resume", inline=inline, fmt=fmt)
 
     @app.get("/api/files/cover")
-    def cover_file(url: str, inline: bool = False):
-        return _pdf_response(url, "cover_letter_path", "cover", inline=inline)
+    def cover_file(url: str, inline: bool = False, fmt: Literal["pdf", "docx"] = "pdf"):
+        return _document_response(url, "cover_letter_path", "cover", inline=inline, fmt=fmt)
 
     @app.get("/api/files/master")
     def master_file(inline: bool = False):
@@ -237,6 +298,14 @@ def create_app() -> FastAPI:
             "score_distribution": [{"score": k, "count": v} for k, v in sorted(score_counts.items())],
             "spend": panel.llm_spend(),
         }
+
+    @app.get("/api/outcomes/summary")
+    def outcomes_summary():
+        return _outcomes_summary()
+
+    @app.get("/api/outcomes/events")
+    def outcome_events(limit: int = Query(30, ge=1, le=100)):
+        return {"events": _outcome_events(limit)}
 
     @app.get("/api/runs")
     def runs_status():
@@ -317,6 +386,10 @@ def create_app() -> FastAPI:
             updates["APPLYPILOT_SALARY_MODE"] = body.salary_mode
         if body.salary_fixed is not None:
             updates["APPLYPILOT_SALARY_FIXED"] = body.salary_fixed.strip()
+        if body.cover_provider is not None:
+            provider = _settings_provider_value(body.cover_provider)
+            updates["APPLYPILOT_COVER_PROVIDER"] = provider
+            updates["APPLYPILOT_ANSWER_PROVIDER"] = provider
         if body.ntfy_topic is not None:
             updates["APPLYPILOT_NTFY_TOPIC"] = _settings_topic_value(body.ntfy_topic)
         if body.webhook_url is not None:
@@ -331,9 +404,102 @@ def create_app() -> FastAPI:
             updates["TELEGRAM_BOT_TOKEN"] = _settings_telegram_token_value(body.telegram_bot_token)
         if body.telegram_chat_id is not None:
             updates["TELEGRAM_CHAT_ID"] = _settings_telegram_chat_value(body.telegram_chat_id)
+        if body.digest_hour is not None:
+            updates["APPLYPILOT_DIGEST_HOUR"] = _settings_digest_hour_value(body.digest_hour)
+        if body.gemini_api_key is not None:
+            updates["GEMINI_API_KEY"] = body.gemini_api_key.strip() or None
         if updates:
             panel.write_env(updates)
         return _settings_payload()
+
+    # ------------------------------------------------------------------
+    # Pipeline runs / autopilot / onboarding (web-app operations)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/pipeline/run")
+    def pipeline_run(body: PipelineRunBody):
+        from applypilot.pipeline import STAGE_ORDER
+        valid = set(STAGE_ORDER) | {"all"}
+        for s in body.stages:
+            if s not in valid:
+                raise HTTPException(status_code=422, detail=f"unknown stage: {s}")
+        if not ops.start_pipeline(body.stages, min_score=body.min_score,
+                                  workers=max(1, min(body.workers, 4))):
+            raise HTTPException(status_code=409, detail="a pipeline run is already active")
+        return ops.pipeline_status()
+
+    @app.get("/api/pipeline/status")
+    def pipeline_status():
+        return ops.pipeline_status()
+
+    @app.post("/api/autopilot")
+    def autopilot_start(body: AutopilotBody):
+        if not ops.start_autopilot(body.count, model=body.model):
+            raise HTTPException(status_code=409, detail="autopilot is already running")
+        return ops.autopilot_status()
+
+    @app.post("/api/autopilot/stop")
+    def autopilot_stop():
+        ops.stop_autopilot()
+        return ops.autopilot_status()
+
+    @app.get("/api/autopilot/status")
+    def autopilot_status():
+        return ops.autopilot_status()
+
+    @app.get("/api/tracking/status")
+    def tracking_status():
+        from applypilot.tracking import sync as tracking_sync
+        return tracking_sync.status()
+
+    @app.post("/api/tracking/sync")
+    async def tracking_sync_now():
+        from applypilot.tracking import auth as tracking_auth, sync as tracking_sync
+        if tracking_sync.backfill_running():
+            raise HTTPException(status_code=409, detail="backfill in progress")
+        try:
+            return await run_in_threadpool(tracking_sync.sync)
+        except tracking_auth.TrackingNotConfigured as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    @app.post("/api/tracking/backfill")
+    def tracking_backfill(body: BackfillBody):
+        from applypilot.tracking import auth as tracking_auth, sync as tracking_sync
+        if not tracking_auth.is_configured():
+            raise HTTPException(status_code=409, detail="tracking not connected")
+        if not tracking_sync.start_backfill(days=body.days):
+            raise HTTPException(status_code=409, detail="backfill already running")
+        return JSONResponse(tracking_sync.status(), status_code=202)
+
+    @app.get("/api/onboarding")
+    def onboarding():
+        return _onboarding_payload()
+
+    @app.get("/api/profile/personal")
+    def get_personal():
+        profile = panel.load_profile()
+        personal = profile.get("personal", {}) if isinstance(profile, dict) else {}
+        keys = ("full_name", "email", "phone", "city", "province_state",
+                "country", "linkedin_url", "github_url", "website_url")
+        return {k: personal.get(k, "") for k in keys}
+
+    @app.put("/api/profile/personal")
+    def put_personal(body: PersonalBody):
+        profile = panel.load_profile() or {}
+        _ensure_profile_skeleton(profile)
+        for k, v in body.model_dump(exclude_none=True).items():
+            profile["personal"][k] = v.strip()
+        panel.save_profile(profile)
+        return get_personal()
+
+    @app.get("/api/searches")
+    def get_searches():
+        return _searches_payload()
+
+    @app.put("/api/searches")
+    def put_searches(body: SearchesBody):
+        _write_searches(body)
+        return _searches_payload()
 
     @app.get("/api/work-context")
     def work_context():
@@ -403,6 +569,182 @@ def _get_job(url: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _set_job_outcome(url: str, raw_outcome: str) -> dict:
+    row = _get_job(url)
+    if row is None:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    outcome = (raw_outcome or "").strip().lower()
+    if outcome and outcome not in VALID_OUTCOMES:
+        allowed = ", ".join(sorted(VALID_OUTCOMES))
+        raise HTTPException(status_code=422, detail=f"outcome must be one of: {allowed}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = panel.db()
+    try:
+        if outcome:
+            conn.execute(
+                "UPDATE jobs SET outcome=?, outcome_at=?, outcome_source='manual' WHERE url=?",
+                (outcome, now, url),
+            )
+            event_type = outcome
+            subject = f"Manual outcome: {outcome}"
+            payload = {"outcome": outcome, "outcome_at": now, "outcome_source": "manual"}
+        else:
+            conn.execute(
+                "UPDATE jobs SET outcome=NULL, outcome_at=NULL, outcome_source=NULL WHERE url=?",
+                (url,),
+            )
+            event_type = "cleared"
+            subject = "Manual outcome cleared"
+            payload = {"outcome": None, "outcome_at": None, "outcome_source": None}
+
+        conn.execute(
+            """
+            INSERT INTO app_events (
+                message_id, thread_id, job_url, company, role, event_type, source,
+                confidence, email_ts, subject, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                None,
+                None,
+                url,
+                row.get("company"),
+                row.get("title"),
+                event_type,
+                "manual",
+                1.0,
+                now,
+                subject,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"ok": True, **payload}
+
+
+def _outcomes_summary() -> dict:
+    conn = panel.db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN apply_status IN ('applied','handoff') THEN 1 ELSE 0 END) AS applied,
+                SUM(CASE WHEN outcome IS NOT NULL AND outcome <> '' THEN 1 ELSE 0 END) AS responded,
+                SUM(CASE WHEN outcome IN ('screen','interview','offer') THEN 1 ELSE 0 END) AS screen,
+                SUM(CASE WHEN outcome IN ('interview','offer') THEN 1 ELSE 0 END) AS interview,
+                SUM(CASE WHEN outcome = 'offer' THEN 1 ELSE 0 END) AS offer,
+                SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) AS rejected
+            FROM jobs
+            """
+        ).fetchone()
+        funnel = {
+            "applied": rows["applied"] or 0,
+            "responded": rows["responded"] or 0,
+            "screen": rows["screen"] or 0,
+            "interview": rows["interview"] or 0,
+            "offer": rows["offer"] or 0,
+            "rejected": rows["rejected"] or 0,
+        }
+
+        by_score = []
+        for band in range(7, 11):
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN apply_status IN ('applied','handoff') THEN 1 ELSE 0 END) AS applied,
+                    SUM(CASE WHEN outcome IS NOT NULL AND outcome <> '' THEN 1 ELSE 0 END) AS responded
+                FROM jobs
+                WHERE fit_score = ?
+                """,
+                (band,),
+            ).fetchone()
+            applied = row["applied"] or 0
+            responded = row["responded"] or 0
+            by_score.append({
+                "band": str(band),
+                "applied": applied,
+                "responded": responded,
+                "response_rate": _response_rate(responded, applied),
+            })
+
+        source_rows = conn.execute(
+            """
+            SELECT
+                COALESCE(site, '') AS site,
+                SUM(CASE WHEN apply_status IN ('applied','handoff') THEN 1 ELSE 0 END) AS applied,
+                SUM(CASE WHEN outcome IS NOT NULL AND outcome <> '' THEN 1 ELSE 0 END) AS responded
+            FROM jobs
+            GROUP BY COALESCE(site, '')
+            ORDER BY COALESCE(site, '')
+            """
+        ).fetchall()
+        by_source = []
+        for row in source_rows:
+            applied = row["applied"] or 0
+            responded = row["responded"] or 0
+            if applied == 0 and responded == 0:
+                continue
+            by_source.append({
+                "site": row["site"] or "unknown",
+                "applied": applied,
+                "responded": responded,
+                "response_rate": _response_rate(responded, applied),
+            })
+    finally:
+        conn.close()
+
+    return {"funnel": funnel, "by_score": by_score, "by_source": by_source}
+
+
+def _outcome_events(limit: int) -> list[dict]:
+    rows = _fetch_rows(
+        """
+        SELECT
+            e.id, e.message_id, e.thread_id, e.job_url,
+            e.company AS event_company, e.role, e.event_type, e.source,
+            e.confidence, e.email_ts, e.subject, e.created_at,
+            j.company AS job_company, j.title AS job_title
+        FROM app_events e
+        LEFT JOIN jobs j ON e.job_url = j.url
+        ORDER BY COALESCE(e.created_at, '') DESC, e.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    events = []
+    for row in rows:
+        events.append({
+            "id": row["id"],
+            "message_id": row["message_id"],
+            "thread_id": row["thread_id"],
+            "job_url": row["job_url"],
+            "company": row["job_company"] or row["event_company"],
+            "job_company": row["job_company"],
+            "role": row["role"],
+            "title": row["job_title"] or row["role"],
+            "job_title": row["job_title"],
+            "event_type": row["event_type"],
+            "source": row.get("source"),
+            "confidence": row["confidence"],
+            "email_ts": row["email_ts"],
+            "subject": row["subject"],
+            "created_at": row["created_at"],
+        })
+    return events
+
+
+def _response_rate(responded: int, applied: int) -> float:
+    if applied <= 0:
+        return 0.0
+    return responded / applied
+
+
 def _queue_rows(
     *,
     min_score: int,
@@ -470,6 +812,9 @@ def _job_shape(row: dict, hidden_urls: set | None = None) -> dict:
         "salary_num": panel.salary_num(row["salary"]),
         "fit_score": row["fit_score"],
         "apply_status": row["apply_status"],
+        "outcome": row.get("outcome"),
+        "outcome_at": row.get("outcome_at"),
+        "outcome_source": row.get("outcome_source"),
         "flags": panel.job_flags(row),
         "docs_ready": has_resume and has_cover,
         "has_resume": has_resume,
@@ -481,20 +826,60 @@ def _job_shape(row: dict, hidden_urls: set | None = None) -> dict:
     }
 
 
-def _pdf_response(url: str, path_field: str, kind: str, inline: bool = False) -> FileResponse:
+def _document_response(
+    url: str,
+    path_field: str,
+    kind: str,
+    *,
+    inline: bool = False,
+    fmt: Literal["pdf", "docx"] = "pdf",
+) -> FileResponse:
     row = _get_job(url)
     if row is None or not row[path_field]:
         raise HTTPException(status_code=404, detail=f"{kind} not found")
+    if fmt == "docx":
+        docx = _ensure_docx(row, path_field, kind)
+        return _file_response(
+            docx,
+            _clean_filename(row, kind, ext=".docx"),
+            inline=False,
+            media_type=DOCX_MEDIA_TYPE,
+        )
     pdf = Path(row[path_field]).with_suffix(".pdf")
     if not pdf.exists():
         raise HTTPException(status_code=404, detail=f"{kind} not found")
     return _file_response(pdf, _clean_filename(row, kind), inline=inline)
 
 
-def _file_response(path: Path, filename: str, inline: bool = False) -> FileResponse:
+def _ensure_docx(row: dict, path_field: str, kind: str) -> Path:
+    base = Path(row[path_field])
+    docx = base.with_suffix(".docx")
+    if docx.exists():
+        return docx
+
+    txt = base if base.suffix.lower() == ".txt" else base.with_suffix(".txt")
+    if not txt.exists():
+        raise HTTPException(status_code=404, detail=f"{kind} docx source not found")
+    text = txt.read_text(encoding="utf-8")
+    try:
+        from applypilot.scoring.docx_render import cover_to_docx, resume_to_docx
+
+        if kind == "cover":
+            return cover_to_docx(text, docx)
+        return resume_to_docx(text, docx)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{kind} docx generation failed") from e
+
+
+def _file_response(
+    path: Path,
+    filename: str,
+    inline: bool = False,
+    media_type: str = "application/pdf",
+) -> FileResponse:
     return FileResponse(
         path,
-        media_type="application/pdf",
+        media_type=media_type,
         filename=filename,
         content_disposition_type="inline" if inline else "attachment",
     )
@@ -626,7 +1011,7 @@ def _regenerate_master_text(pdf: Path) -> None:
         txt.write_text(fallback.read_text(errors="ignore") if fallback.exists() else "")
 
 
-def _clean_filename(row: dict, kind: str) -> str:
+def _clean_filename(row: dict, kind: str, ext: str = ".pdf") -> str:
     stem = "_".join(
         part
         for part in (
@@ -636,7 +1021,7 @@ def _clean_filename(row: dict, kind: str) -> str:
         )
         if part
     )
-    return f"{stem or kind}.pdf"
+    return f"{stem or kind}{ext}"
 
 
 def _filename_part(value: str | None) -> str:
@@ -745,6 +1130,109 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+
+
+async def _background_ticker(interval_s: float = 600) -> None:
+    """Every 10 minutes: maybe send the daily digest; sync Gmail tracking when
+    configured. Each tick is best-effort — a failure never kills the loop."""
+    while True:
+        try:
+            await run_in_threadpool(ops.maybe_send_digest)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from applypilot.tracking import sync as _tracking_sync  # type: ignore
+
+            await run_in_threadpool(_tracking_sync.auto_sync)
+        except Exception:  # noqa: BLE001 — tracking optional/not configured
+            pass
+        await asyncio.sleep(interval_s)
+
+
+def _settings_digest_hour_value(value: str) -> str | None:
+    value = value.strip()
+    if value == "":
+        return None
+    if not value.isdigit() or not (0 <= int(value) <= 23):
+        raise HTTPException(status_code=422, detail="digest hour must be 0-23 or empty")
+    return value
+
+
+def _ensure_profile_skeleton(profile: dict) -> None:
+    """Give a fresh profile every top-level key downstream code touches."""
+    profile.setdefault("personal", {})
+    profile.setdefault("work_authorization",
+                       {"legally_authorized_to_work": "Yes", "require_sponsorship": "No"})
+    profile.setdefault("availability", {})
+    profile.setdefault("compensation", {"salary_expectation": "0"})
+    profile.setdefault("experience", {})
+    profile.setdefault("skills_boundary", {})
+    profile.setdefault("resume_facts", {})
+    profile.setdefault("eeo_voluntary", {})
+    profile.setdefault("screening", {})
+
+
+def _searches_path() -> Path:
+    return panel.paths()["APP"] / "searches.yaml"
+
+
+def _load_searches_raw() -> dict:
+    import yaml
+    try:
+        data = yaml.safe_load(_searches_path().read_text()) or {}
+        return data if isinstance(data, dict) else {}
+    except OSError:
+        return {}
+
+
+def _searches_payload() -> dict:
+    raw = _load_searches_raw()
+    titles = [q.get("query", "") for q in raw.get("queries", []) if isinstance(q, dict)]
+    locs = [l.get("location", "") for l in raw.get("locations", [])
+            if isinstance(l, dict) and not l.get("remote")]
+    remote = any(isinstance(l, dict) and l.get("remote") for l in raw.get("locations", []))
+    return {"titles": [s for s in titles if s], "locations": [s for s in locs if s],
+            "remote": remote, "exists": _searches_path().exists()}
+
+
+def _write_searches(body) -> None:
+    """Map the simple wizard model onto searches.yaml, preserving unmodeled keys."""
+    import yaml
+    raw = _load_searches_raw()
+    raw["queries"] = [{"query": s, "tier": 2} for s in body.titles]
+    locations = [{"location": s, "remote": False} for s in body.locations]
+    if body.remote:
+        locations.append({"location": "Remote", "remote": True})
+    raw["locations"] = locations or [{"location": "Remote", "remote": True}]
+    raw.setdefault("location", {"accept_patterns": (["Remote"] if body.remote else []) + body.locations,
+                                "reject_patterns": []})
+    path = _searches_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=True))
+
+
+def _onboarding_payload() -> dict:
+    app_dir = panel.paths()["APP"]
+    profile = panel.load_profile()
+    personal = profile.get("personal", {}) if isinstance(profile, dict) else {}
+    searches = _searches_payload()
+    try:
+        jobs_discovered = _fetch_rows("SELECT COUNT(*) AS n FROM jobs")[0]["n"]
+    except Exception:  # noqa: BLE001 — fresh machine, no DB yet
+        jobs_discovered = 0
+    env = panel.read_env()
+    return {
+        "resume_ready": (app_dir / "master_resume.pdf").exists() or (app_dir / "resume.txt").exists(),
+        "profile_ready": bool(personal.get("full_name") and personal.get("email")),
+        "searches_ready": searches["exists"] and bool(searches["titles"]),
+        "claude_cli": shutil.which("claude") is not None,
+        "api_key_present": bool(env.get("GEMINI_API_KEY") or env.get("OPENAI_API_KEY")),
+        "telegram_configured": bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID")),
+        "tracking_configured": (app_dir / "google_token.json").exists(),
+        "jobs_discovered": jobs_discovered,
+    }
+
+
 def _settings_payload() -> dict:
     env = panel.read_env()
     app_dir = panel.paths()["APP"]
@@ -755,6 +1243,8 @@ def _settings_payload() -> dict:
         "salary_mode": env.get("APPLYPILOT_SALARY_MODE", "posting"),
         "salary_fixed": env.get("APPLYPILOT_SALARY_FIXED", ""),
         "llm_model": env.get("LLM_MODEL", ""),
+        "cover_provider": resolve_provider_name("cover", env=env, default="local"),
+        "claude_cli_available": shutil.which("claude") is not None,
         "telegram_connected": bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID")),
         "ntfy_configured": bool(env.get("APPLYPILOT_NTFY_TOPIC")),
         "webhook_configured": bool(env.get("APPLYPILOT_WEBHOOK_URL")),
@@ -762,8 +1252,19 @@ def _settings_payload() -> dict:
         "slack_configured": bool(env.get("SLACK_WEBHOOK_URL")),
         "platform_darwin": platform_darwin,
         "macos_banner": env.get("APPLYPILOT_MACOS_BANNER", "1") != "0",
+        "digest_hour": env.get("APPLYPILOT_DIGEST_HOUR", ""),
         "master_resume_exists": (app_dir / "master_resume.pdf").exists(),
     }
+
+
+def _settings_provider_value(value: str) -> str | None:
+    value = value.strip().lower()
+    if value == "":
+        return None
+    if value not in ALLOWED_PROVIDERS:
+        allowed = ", ".join(ALLOWED_PROVIDERS)
+        raise HTTPException(status_code=422, detail=f"cover_provider must be one of: {allowed}")
+    return value
 
 
 def _settings_topic_value(value: str) -> str | None:

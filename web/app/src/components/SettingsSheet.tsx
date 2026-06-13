@@ -2,8 +2,8 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { X } from '@phosphor-icons/react'
-import { Books } from '@phosphor-icons/react'
-import { api, type Settings } from '../lib/api'
+import { Books, CircleNotch, EnvelopeOpen } from '@phosphor-icons/react'
+import { api, type Settings, type TrackingStatus } from '../lib/api'
 import { enableBrowserNotifications, type AlertPrefs } from '../lib/alerts'
 import { DECK } from '../lib/motion'
 import { ResumeLibrary } from './ResumeLibrary'
@@ -23,6 +23,7 @@ export function SettingsSheet({
   onModel,
   alertPrefs,
   onAlertPrefs,
+  onOpenWizard,
 }: {
   open: boolean
   onClose: () => void
@@ -30,6 +31,7 @@ export function SettingsSheet({
   onModel: (m: string) => void
   alertPrefs: AlertPrefs
   onAlertPrefs: (p: AlertPrefs) => void
+  onOpenWizard?: () => void
 }) {
   const [s, setS] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
@@ -146,6 +148,28 @@ export function SettingsSheet({
                     </div>
                   </div>
 
+                  {s.cover_provider !== undefined && (
+                    <div>
+                      <div className="mb-1 text-[13px] text-ink">Covers &amp; answers written by</div>
+                      <div className="mb-2 text-[11.5px] leading-relaxed text-faint">
+                        Claude (your subscription, $0) writes far better prose than the lite pipeline model.
+                      </div>
+                      <div className="flex gap-1.5">
+                        <Chip active={s.cover_provider !== 'claude-cli'} onClick={() => patch({ cover_provider: '' } as Partial<Settings>)}>
+                          Pipeline LLM
+                        </Chip>
+                        <Chip active={s.cover_provider === 'claude-cli'} onClick={() => {
+                          if (!s.claude_cli_available) { alert('claude CLI not found on PATH'); return }
+                          patch({ cover_provider: 'claude-cli' } as Partial<Settings>)
+                        }}>
+                          Claude
+                        </Chip>
+                      </div>
+                    </div>
+                  )}
+
+                  <TrackingCard />
+
                   <div className="space-y-3 border-t border-white/[0.07] pt-4">
                     <Eyebrow>Alerts</Eyebrow>
                     <Row title="Browser notifications" desc="OS banner when a run needs you or finishes.">
@@ -163,8 +187,16 @@ export function SettingsSheet({
                     <ChannelFields s={s} onSaved={() => api.settings().then(setS).catch(() => {})} />
                   </div>
 
-                  <div className="border-t border-white/[0.07] pt-4 text-[11.5px] text-faint">
-                    Pipeline LLM: <span className="text-mut">{s.llm_model || '?'}</span>
+                  <div className="flex items-center justify-between border-t border-white/[0.07] pt-4 text-[11.5px] text-faint">
+                    <span>Pipeline LLM: <span className="text-mut">{s.llm_model || '?'}</span></span>
+                    {onOpenWizard && (
+                      <button
+                        onClick={() => { onClose(); onOpenWizard() }}
+                        className="rounded-full px-3 py-1 text-[11.5px] text-faint ring-1 ring-white/[0.07] transition-all hover:text-ink hover:ring-white/20"
+                      >
+                        Run setup again
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -270,6 +302,94 @@ function ChannelFields({ s, onSaved }: { s: ChannelSettings; onSaved: () => void
           />
         </div>
       ))}
+    </div>
+  )
+}
+
+
+/** Gmail application tracking: connect status, backfill with progress, sync. */
+function TrackingCard() {
+  const [st, setSt] = useState<TrackingStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [missing, setMissing] = useState(false)
+
+  const load = () => api.trackingStatus().then(setSt).catch(() => setMissing(true))
+  useEffect(() => {
+    load()
+  }, [])
+
+  // poll while a backfill runs
+  useEffect(() => {
+    if (!st?.backfill || st.backfill.done_at) return
+    const t = setInterval(load, 2500)
+    return () => clearInterval(t)
+  }, [st?.backfill])
+
+  if (missing || !st) return null
+  const bf = st.backfill
+
+  return (
+    <div className="space-y-3 border-t border-white/[0.07] pt-4">
+      <div className="flex items-center justify-between">
+        <Eyebrow>Application tracking</Eyebrow>
+        <span className="flex items-center gap-1.5 text-[11px] text-faint">
+          <span className={`h-1.5 w-1.5 rounded-full ${st.configured ? 'bg-sage' : 'bg-white/20'}`} />
+          {st.configured ? 'Gmail connected' : 'not connected'}
+        </span>
+      </div>
+      {!st.configured ? (
+        <p className="text-[11.5px] leading-relaxed text-faint">
+          Reads application emails (metadata only, read-only scope) to track responses, interviews,
+          and rejections automatically. Run <code className="text-mut">applypilot track auth</code> in
+          a terminal to connect, then reopen this sheet.
+        </p>
+      ) : (
+        <>
+          <div className="flex items-center justify-between text-[11.5px] text-faint">
+            <span>
+              {st.events_total} signals · {st.matched_total} matched
+              {st.last_sync && <> · synced {st.last_sync.slice(0, 16).replace('T', ' ')}</>}
+            </span>
+          </div>
+          {bf && !bf.done_at ? (
+            <div>
+              <div className="mb-1 flex items-center gap-2 text-[11.5px] text-sky">
+                <CircleNotch size={12} className="animate-spin" /> Backfilling — {bf.scanned}/{bf.total || '?'} scanned · {bf.events} signals
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
+                <div
+                  className="h-full rounded-full bg-sky transition-all duration-700"
+                  style={{ width: bf.total ? `${(bf.scanned / bf.total) * 100}%` : '30%' }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true)
+                  try { await api.trackingSync(); await load() } catch (e) { alert(String(e)) } finally { setBusy(false) }
+                }}
+                className="flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] text-mut ring-1 ring-white/[0.08] transition-all hover:text-ink hover:ring-white/20 disabled:opacity-40"
+              >
+                {busy ? <CircleNotch size={12} className="animate-spin" /> : <EnvelopeOpen weight="light" size={13} />} Sync now
+              </button>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  if (!confirm('Scan the last 90 days of Gmail for application signals?')) return
+                  await api.trackingBackfill(90)
+                  load()
+                }}
+                className="rounded-full px-3.5 py-1.5 text-[12px] text-mut ring-1 ring-white/[0.08] transition-all hover:text-ink hover:ring-white/20 disabled:opacity-40"
+              >
+                Backfill 90 days
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </div>
   )
 }

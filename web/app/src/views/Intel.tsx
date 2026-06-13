@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 import type { Stats } from '../lib/api'
 import { stagger } from '../lib/motion'
+import { OutcomesSection } from '../components/Outcomes'
 import { Bezel, Eyebrow } from '../components/ui'
 
 const CLAY = '#d97757'
@@ -151,6 +152,8 @@ export function Intel({ stats }: { stats: Stats | null }) {
             </div>
           </div>
         </Bezel>
+
+        <OutcomesSection />
       </div>
     </motion.div>
   )

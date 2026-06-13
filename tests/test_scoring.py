@@ -68,3 +68,63 @@ def test_pending_score_stage_still_includes_failed(tmp_path, monkeypatch):
     run_scoring()
     pending = db.get_jobs_by_stage(conn=conn, stage="pending_score", limit=0)
     assert any(j["url"] == "https://example.com/fail" for j in pending)
+
+
+# ── Batched scoring ────────────────────────────────────────────────────────
+
+def _batch_jobs(n):
+    return [{"url": f"https://j.test/{i}", "title": f"Role {i}", "site": "indeed",
+             "company": f"Co{i}", "location": "Remote", "full_description": "desc"}
+            for i in range(1, n + 1)]
+
+
+def test_score_jobs_batch_parses_full_response(monkeypatch):
+    from applypilot.scoring import scorer
+
+    class FakeClient:
+        def chat(self, messages, **kw):
+            return '[{"n":1,"score":8,"keywords":"sql","reasoning":"fit"},' \
+                   '{"n":2,"score":5,"keywords":"","reasoning":"meh"}]'
+
+    monkeypatch.setattr(scorer, "get_client", lambda stage=None: FakeClient())
+    jobs = _batch_jobs(2)
+    out = scorer.score_jobs_batch("resume", jobs)
+    assert out[jobs[0]["url"]]["score"] == 8
+    assert out[jobs[1]["url"]]["score"] == 5
+
+
+def test_score_jobs_batch_partial_and_garbage_entries(monkeypatch):
+    from applypilot.scoring import scorer
+
+    class FakeClient:
+        def chat(self, messages, **kw):
+            # job 2 missing; one entry out of range; one malformed
+            return 'noise [{"n":1,"score":9,"keywords":"","reasoning":"r"},' \
+                   '{"n":7,"score":8},{"n":"x"}] trailing'
+
+    monkeypatch.setattr(scorer, "get_client", lambda stage=None: FakeClient())
+    jobs = _batch_jobs(2)
+    out = scorer.score_jobs_batch("resume", jobs)
+    assert jobs[0]["url"] in out and out[jobs[0]["url"]]["score"] == 9
+    assert jobs[1]["url"] not in out  # caller falls back per-job
+
+
+def test_score_jobs_batch_failure_returns_empty(monkeypatch):
+    from applypilot.scoring import scorer
+
+    class Boom:
+        def chat(self, messages, **kw):
+            raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(scorer, "get_client", lambda stage=None: Boom())
+    assert scorer.score_jobs_batch("resume", _batch_jobs(3)) == {}
+
+
+def test_batch_size_env(monkeypatch):
+    from applypilot.scoring import scorer
+    monkeypatch.setenv("APPLYPILOT_SCORE_BATCH", "3")
+    assert scorer._batch_size() == 3
+    monkeypatch.setenv("APPLYPILOT_SCORE_BATCH", "junk")
+    assert scorer._batch_size() == 8
+    monkeypatch.setenv("APPLYPILOT_SCORE_BATCH", "0")
+    assert scorer._batch_size() == 1

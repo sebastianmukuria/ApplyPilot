@@ -386,6 +386,62 @@ def app_command(
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 
 
+
+track_app = typer.Typer(help="Gmail application tracking (responses, interviews, rejections).")
+app.add_typer(track_app, name="track")
+
+
+@track_app.command("auth")
+def track_auth() -> None:
+    """Connect Gmail (read-only) via Google OAuth in your browser."""
+    _bootstrap()
+    from applypilot.tracking.auth import run_auth_flow
+
+    token = run_auth_flow()
+    console.print(f"[green]Connected.[/green] Token saved to {token} (read-only Gmail scope).")
+
+
+@track_app.command("sync")
+def track_sync(window: str = typer.Option("2d", "--window", help="Gmail newer_than window.")) -> None:
+    """Scan recent mail for application signals."""
+    _bootstrap()
+    from applypilot.tracking import sync as tracking_sync
+
+    result = tracking_sync.sync(window=window)
+    console.print(f"Scanned {result['scanned']} | classified {result['classified']} "
+                  f"| new signals {result['events']} | outcomes set {result['outcomes_set']}")
+
+
+@track_app.command("backfill")
+def track_backfill(days: int = typer.Option(90, "--days", min=1, max=365)) -> None:
+    """One-time history reconstruction from Gmail."""
+    _bootstrap()
+    import time as _time
+    from applypilot.tracking import sync as tracking_sync
+
+    if not tracking_sync.start_backfill(days=days):
+        console.print("[yellow]A backfill is already running.[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"Backfilling {days} days…")
+    while tracking_sync.backfill_running():
+        bf = tracking_sync.status().get("backfill") or {}
+        console.print(f"  {bf.get('phase','…')}: {bf.get('scanned',0)}/{bf.get('total','?')} "
+                      f"| signals {bf.get('events',0)}", highlight=False)
+        _time.sleep(5)
+    bf = tracking_sync.status().get("backfill") or {}
+    console.print(f"[green]Backfill {bf.get('phase','done')}[/green] — {bf.get('events',0)} signals.")
+
+
+@track_app.command("status")
+def track_status() -> None:
+    """Connection + sync state."""
+    _bootstrap()
+    from applypilot.tracking import sync as tracking_sync
+
+    s = tracking_sync.status()
+    console.print(f"Connected: {s['configured']} | last sync: {s['last_sync'] or 'never'} "
+                  f"| signals: {s['events_total']} ({s['matched_total']} matched)")
+
 @app.command()
 def doctor() -> None:
     """Check your setup and diagnose missing requirements."""

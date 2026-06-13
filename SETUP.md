@@ -9,9 +9,10 @@ pipeline does the rest.
 |---|---|---|
 | Python 3.11+ | the pipeline | yes |
 | Google Chrome | enrichment + the apply agent drives a real Chrome | yes |
-| A Gemini API key ([aistudio.google.com](https://aistudio.google.com/apikey)) | scoring, tailoring, cover letters | yes |
-| [Claude Code CLI](https://claude.com/claude-code) with a subscription | the auto-apply agent (browser automation) | only for `applypilot apply` |
+| [Claude Code CLI](https://claude.com/claude-code) with a subscription | **the whole engine** — scoring, documents, answers, AND auto-applying | yes (recommended) |
+| A Gemini API key ([aistudio.google.com](https://aistudio.google.com/apikey)) | alternative engine for everything except auto-apply | optional |
 | A Telegram account | pings you when a run needs you (CAPTCHA / review) | optional |
+| Gmail (read-only OAuth) | automatic response/interview/rejection tracking | optional |
 
 macOS and Linux are supported; Windows mostly works but is less tested.
 
@@ -100,19 +101,24 @@ Then check everything is wired:
 applypilot doctor
 ```
 
-## 3. API key and model — read this part
+## 3. The engine — Claude subscription runs everything
 
-Open `~/.applypilot/.env` and set:
+If Claude Code is installed and signed in, **you're done — skip this
+section.** Scoring, tailored documents, cover letters, answers, and email
+classification all run through your Claude subscription automatically
+(scoring is batched, several jobs per call, so volume is fine).
+
+Prefer (or only have) a Gemini key? Add to `~/.applypilot/.env`:
 
 ```ini
 GEMINI_API_KEY=your-key-here
 LLM_MODEL=gemini-3.1-flash-lite
 ```
 
-> **⚠️ Use a non-thinking ("lite") model.** Thinking models (e.g.
-> `gemini-3.5-flash`, `gemini-2.5-flash`) burn the entire output-token budget
-> on internal reasoning and return **empty tailored résumés** (you'll see
-> `exhausted_retries`). `gemini-3.1-flash-lite` is fast, cheap, and works.
+> **⚠️ On the Gemini path, use a non-thinking ("lite") model** — thinking
+> models burn the output budget on reasoning and return empty documents.
+> (ApplyPilot now disables Gemini thinking automatically where the API
+> allows it, so newer models also work.)
 
 Keep `.env` private — it holds your API keys (the app chmods it to `0600`).
 
@@ -236,6 +242,26 @@ To get a phone notification when a run needs you:
 
 Pings fire when a run needs you (CAPTCHA / review), when a run fails or
 finishes, and at the end of a batch.
+
+## Email tracking (the Pipeline Radar)
+
+ApplyPilot can watch Gmail for replies to your applications — interview
+invites, rejections, recruiter outreach — chart your real response rates,
+and update each job's outcome automatically. **Read-only scope, metadata
+only (sender/subject/date/snippet), everything stored locally.**
+
+1. In [Google Cloud Console](https://console.cloud.google.com): create a
+   project → enable the **Gmail API** → OAuth consent screen (External,
+   add yourself as a test user) → Credentials → **OAuth client ID →
+   Desktop app** → download the JSON.
+2. Save it as `~/.applypilot/google_credentials.json`.
+3. Run `applypilot track auth` — your browser opens, you approve, done.
+4. In the app: Settings → Application tracking → **Backfill 90 days**,
+   then it syncs itself every 20 minutes while the app runs.
+
+Revoke any time at myaccount.google.com → Security → third-party access.
+Prefer not to? Log outcomes by hand with the outcome selector on any
+applied job card — the Radar charts work either way.
 
 ## Running at volume (100+/day)
 

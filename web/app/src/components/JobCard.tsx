@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
-  ArrowSquareOut, CaretDown, EyeSlash, FilePdf, EnvelopeSimple, Play, Check,
+  ArrowSquareOut, CaretDown, DownloadSimple, EyeSlash, FilePdf, EnvelopeSimple, Play, Check,
 } from '@phosphor-icons/react'
 import { api, type Job } from '../lib/api'
 import { DECK } from '../lib/motion'
@@ -104,6 +104,24 @@ export function JobCard({
               <EnvelopeSimple weight="light" size={14} /> Cover
             </GhostAction>
           )}
+          {(job.apply_status === 'applied' || job.apply_status === 'handoff') && (
+            <select
+              value={job.outcome ?? ''}
+              onChange={async (e) => {
+                await api.setOutcome(job.url, e.target.value)
+                onChanged()
+              }}
+              title="What happened after applying?"
+              className={`rounded-full bg-transparent px-2.5 py-1.5 text-[11px] uppercase tracking-[0.1em] ring-1 outline-none transition-all ${
+                job.outcome ? 'text-sky ring-sky/30' : 'text-faint ring-white/[0.07] hover:text-mut'
+              }`}
+            >
+              <option value="" className="bg-[#111]">outcome…</option>
+              {['responded', 'screen', 'interview', 'offer', 'rejected'].map((o) => (
+                <option key={o} value={o} className="bg-[#111]">{o}</option>
+              ))}
+            </select>
+          )}
           {(job.apply_status === 'handoff' || job.apply_status === 'failed') && (
             <GhostAction
               onClick={async () => {
@@ -160,6 +178,20 @@ export function JobCard({
                     <Dossier title="Cover letter" text={detail.cover_preview} />
                   ) : null}
                 </div>
+                {(job.has_resume || job.has_cover) && (
+                  <div className="mt-3 flex gap-2">
+                    {job.has_resume && (
+                      <GhostAction href={api.resumeDocxUrl(job.url)} download title="Word format — some ATSes parse it better">
+                        <DownloadSimple weight="light" size={13} /> Résumé .docx
+                      </GhostAction>
+                    )}
+                    {job.has_cover && (
+                      <GhostAction href={api.coverDocxUrl(job.url)} download>
+                        <DownloadSimple weight="light" size={13} /> Cover .docx
+                      </GhostAction>
+                    )}
+                  </div>
+                )}
               </div>
             </motion.div>
           )}

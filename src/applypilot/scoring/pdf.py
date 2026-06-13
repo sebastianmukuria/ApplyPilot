@@ -320,6 +320,7 @@ def convert_to_pdf(
     out = Path(out)
     render_pdf(html, str(out))
     log.info("PDF generated: %s", out)
+    _render_docx_sibling(text, out.with_suffix(".docx"), kind="resume")
     return out
 
 
@@ -353,11 +354,35 @@ def convert_letter_to_pdf(txt_path: Path, applicant_name: str,
                           output_path: Path | None = None) -> Path:
     """Render a cover-letter .txt to a properly formatted PDF."""
     txt_path = Path(txt_path)
-    html = _letter_html(txt_path.read_text(encoding="utf-8"), applicant_name)
+    text = txt_path.read_text(encoding="utf-8")
+    html = _letter_html(text, applicant_name)
     out = Path(output_path or txt_path.with_suffix(".pdf"))
     render_pdf(html, str(out))
     log.info("Cover letter PDF generated: %s", out)
+    _render_docx_sibling(text, out.with_suffix(".docx"), kind="cover")
     return out
+
+
+def _render_docx_sibling(text: str, out_path: Path, kind: str) -> Path | None:
+    """Best-effort DOCX sibling generation for a rendered PDF."""
+    try:
+        from applypilot.scoring.docx_render import cover_to_docx, resume_to_docx
+
+        if kind == "cover":
+            return cover_to_docx(text, out_path)
+        return resume_to_docx(text, out_path)
+    except Exception as e:
+        log.warning("DOCX generation failed for %s: %s", out_path, e)
+        return None
+
+
+def _applicant_name() -> str:
+    try:
+        from applypilot.config import load_profile
+
+        return load_profile().get("personal", {}).get("full_name", "")
+    except Exception:
+        return ""
 
 
 def batch_convert(limit: int = 50) -> int:
@@ -384,25 +409,38 @@ def batch_convert(limit: int = 50) -> int:
         if not f.name.endswith("_JOB.txt")
     ]
 
-    # Filter to those without a corresponding PDF
+    # Filter to those without a corresponding PDF or DOCX sibling
     to_convert: list[Path] = []
     for f in candidates:
         pdf_path = f.with_suffix(".pdf")
-        if not pdf_path.exists():
+        docx_path = f.with_suffix(".docx")
+        if not pdf_path.exists() or not docx_path.exists():
             to_convert.append(f)
         if len(to_convert) >= limit:
             break
 
     if not to_convert:
-        log.info("All text files already have PDFs.")
+        log.info("All text files already have PDFs and DOCX siblings.")
         return 0
 
-    log.info("Converting %d files to PDF...", len(to_convert))
+    log.info("Converting %d files to PDF/DOCX...", len(to_convert))
     converted = 0
     for f in to_convert:
         try:
-            convert_to_pdf(f)
-            converted += 1
+            pdf_path = f.with_suffix(".pdf")
+            if not pdf_path.exists():
+                if f.name.endswith("_CL.txt"):
+                    convert_letter_to_pdf(f, applicant_name=_applicant_name())
+                else:
+                    convert_to_pdf(f)
+                converted += 1
+            elif not f.with_suffix(".docx").exists():
+                kind = "cover" if f.name.endswith("_CL.txt") else "resume"
+                _render_docx_sibling(
+                    f.read_text(encoding="utf-8"),
+                    f.with_suffix(".docx"),
+                    kind=kind,
+                )
         except Exception as e:
             log.error("Failed to convert %s: %s", f.name, e)
 

@@ -18,6 +18,7 @@ export interface Job {
   discovered_at: string | null
   application_url: string | null
   hidden: boolean
+  outcome?: string | null
 }
 
 export interface JobsResponse {
@@ -95,6 +96,35 @@ export interface Settings {
   llm_model: string
   telegram_connected: boolean
   master_resume_exists: boolean
+  cover_provider?: string
+  claude_cli_available?: boolean
+}
+
+export interface OutcomesSummary {
+  funnel: Record<string, number>
+  by_score: { band: string; applied: number; responded: number; response_rate: number }[]
+  by_source: { site: string; applied: number; responded: number; response_rate: number }[]
+}
+
+export interface AppEvent {
+  id: number
+  company: string
+  role: string
+  event_type: string
+  confidence: number
+  email_ts: string | null
+  subject: string | null
+  job_url: string | null
+  job_company?: string | null
+  job_title?: string | null
+}
+
+export interface TrackingStatus {
+  configured: boolean
+  last_sync: string | null
+  backfill: { phase: string; scanned: number; total: number; events: number; done_at?: string } | null
+  events_total: number
+  matched_total: number
 }
 
 export interface WorkContext {
@@ -199,6 +229,26 @@ export const api = {
   genAnswer(body: { company: string; question: string; length?: string; prev?: string }) {
     return http<{ answer: string }>(`/api/answers`, { method: 'POST', body: JSON.stringify(body) })
   },
+  setOutcome(url: string, outcome: string) {
+    return http(`/api/jobs/outcome`, { method: 'POST', body: JSON.stringify({ url, outcome }) })
+  },
+  outcomesSummary(): Promise<OutcomesSummary> {
+    return http(`/api/outcomes/summary`)
+  },
+  outcomesEvents(limit = 30): Promise<{ events: AppEvent[] } | AppEvent[]> {
+    return http(`/api/outcomes/events?limit=${limit}`)
+  },
+  trackingStatus(): Promise<TrackingStatus> {
+    return http(`/api/tracking/status`)
+  },
+  trackingSync() {
+    return http<{ scanned: number; events: number; outcomes_set: number }>(`/api/tracking/sync`, { method: 'POST' })
+  },
+  trackingBackfill(days = 90) {
+    return http(`/api/tracking/backfill`, { method: 'POST', body: JSON.stringify({ days }) })
+  },
+  resumeDocxUrl: (url: string) => `/api/files/resume?url=${encodeURIComponent(url)}&fmt=docx`,
+  coverDocxUrl: (url: string) => `/api/files/cover?url=${encodeURIComponent(url)}&fmt=docx`,
   resumeUrl: (url: string, inline = false) =>
     `/api/files/resume?url=${encodeURIComponent(url)}${inline ? '&inline=1' : ''}`,
   coverUrl: (url: string, inline = false) =>
@@ -212,7 +262,15 @@ export function subscribeRunLog(runId: string, handlers: {
   onEnd?: () => void
 }): () => void {
   const es = new EventSource(`/api/run/log/stream?run_id=${encodeURIComponent(runId)}`)
-  es.addEventListener('log', (e) => handlers.onLog?.((e as MessageEvent).data))
+  es.addEventListener('log', (e) => {
+    // the server sends {"line": "..."}; unwrap to the raw text
+    const raw = (e as MessageEvent).data
+    try {
+      handlers.onLog?.(JSON.parse(raw).line ?? raw)
+    } catch {
+      handlers.onLog?.(raw)
+    }
+  })
   es.addEventListener('status', (e) => {
     try {
       handlers.onStatus?.(JSON.parse((e as MessageEvent).data))

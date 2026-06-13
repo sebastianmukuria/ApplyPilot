@@ -647,6 +647,47 @@ def test_settings_do_not_return_secrets_and_put_round_trips(api):
     assert data["macos_banner"] is False
 
 
+def test_settings_provider_fields_and_put_round_trip(api, monkeypatch):
+    client, app_dir, _ = api
+    import applypilot.server as server
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/claude" if name == "claude" else None)
+    (app_dir / ".env").write_text("GEMINI_API_KEY=secret-gemini-key\n")
+
+    # Claude-first policy: with the CLI available, the subscription IS the
+    # default engine even when an API key exists.
+    import applypilot.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "_claude_cli_available", lambda: True)
+    data = client.get("/api/settings").json()
+    assert data["cover_provider"] == "claude-cli"
+    assert data["claude_cli_available"] is True
+    assert "secret-gemini-key" not in json.dumps(data)
+
+    # ...and without the CLI, the key carries the pipeline.
+    monkeypatch.setattr(llm_mod, "_claude_cli_available", lambda: False)
+    assert client.get("/api/settings").json()["cover_provider"] == "gemini"
+    monkeypatch.setattr(llm_mod, "_claude_cli_available", lambda: True)
+
+    response = client.put("/api/settings", json={"cover_provider": "claude-cli"})
+    assert response.status_code == 200
+    assert response.json()["cover_provider"] == "claude-cli"
+    text = (app_dir / ".env").read_text()
+    assert "APPLYPILOT_COVER_PROVIDER=claude-cli" in text
+    assert "APPLYPILOT_ANSWER_PROVIDER=claude-cli" in text
+
+    response = client.put("/api/settings", json={"cover_provider": ""})
+    assert response.status_code == 200
+    text = (app_dir / ".env").read_text()
+    assert "APPLYPILOT_COVER_PROVIDER=" not in text
+    assert "APPLYPILOT_ANSWER_PROVIDER=" not in text
+
+
+def test_settings_reject_invalid_cover_provider(api):
+    client, _, _ = api
+    response = client.put("/api/settings", json={"cover_provider": "anthropic"})
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize("field", ["webhook_url", "discord_webhook_url", "slack_webhook_url"])
 def test_settings_reject_invalid_notification_urls(api, field):
     client, _, _ = api

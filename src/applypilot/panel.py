@@ -102,6 +102,14 @@ def write_env(updates: dict):
         os.chmod(env, 0o600)
     except OSError:
         pass
+    # Mirror into the live process so in-process readers (the digest ticker,
+    # llm.get_client provider resolution, the tracking classifier) see UI
+    # changes immediately instead of only after a restart. Deletions too.
+    for k, v in updates.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = str(v)
 
 
 def load_prefs() -> dict:
@@ -484,5 +492,8 @@ def gen_answer(profile, company, question, length, prev) -> str:
     user = f"Company/role: {company}\nQuestion: {question}\nDesired length: {length}"
     if prev:
         user += f"\nPrevious answer to improve (fix what's wrong): {prev}"
-    return get_client().chat([{"role": "system", "content": sys}, {"role": "user", "content": user}],
-                             max_tokens=600, temperature=0.5)
+    return get_client(stage="answer").chat(
+        [{"role": "system", "content": sys}, {"role": "user", "content": user}],
+        max_tokens=600,
+        temperature=0.5,
+    )

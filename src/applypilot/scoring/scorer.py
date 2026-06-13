@@ -6,6 +6,7 @@ profile and resume file.
 """
 
 import json
+import os
 import logging
 import re
 import time
@@ -94,13 +95,88 @@ def score_job(resume_text: str, job: dict) -> dict:
     ]
 
     try:
-        client = get_client()
+        client = get_client(stage="score")
         response = client.chat(messages, max_tokens=512, temperature=0.2)
         return _parse_score_response(response)
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
         # score=None (not 0) so the job stays pending and is retried next run.
         return {"score": None, "keywords": "", "reasoning": f"LLM error: {e}"}
+
+
+def _batch_size() -> int:
+    """Jobs per LLM call. Batching keeps claude-cli (and Gemini free-tier RPM)
+    viable at discovery volume; 1 disables batching."""
+    try:
+        return max(1, int(os.environ.get("APPLYPILOT_SCORE_BATCH", "8")))
+    except ValueError:
+        return 8
+
+
+def score_jobs_batch(resume_text: str, jobs: list[dict]) -> dict[str, dict]:
+    """Score several jobs in one LLM call.
+
+    Returns {url: result} for every job the model covered with a parseable
+    entry; callers fall back to score_job() for anything missing. Never
+    raises -- a failed batch returns {}.
+    """
+    blocks = []
+    for i, job in enumerate(jobs, 1):
+        blocks.append(
+            f"### JOB {i}\n"
+            f"TITLE: {job['title']}\n"
+            f"COMPANY: {job.get('company') or job['site']}\n"
+            f"LOCATION: {job.get('location', 'N/A')}\n"
+            f"DESCRIPTION:\n{(job.get('full_description') or '')[:1500]}"
+        )
+    system = (
+        SCORE_PROMPT
+        + "\n\nYou are scoring MULTIPLE jobs in one pass. Respond with ONLY a "
+        "JSON array, one object per job, no markdown fences:\n"
+        '[{"n": 1, "score": 7, "keywords": "...", "reasoning": "..."}]\n'
+        "Every job number must appear exactly once."
+    )
+    user = f"RESUME:\n{resume_text}\n\n---\n\n" + "\n\n".join(blocks)
+
+    try:
+        client = get_client(stage="score")
+        response = client.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=320 * len(jobs),
+            temperature=0.2,
+        )
+    except Exception as e:
+        log.warning("Batch scoring call failed (%s); falling back per-job", e)
+        return {}
+
+    m = re.search(r"\[.*\]", response, re.DOTALL)
+    if not m:
+        log.warning("Batch scoring response had no JSON array; falling back per-job")
+        return {}
+    try:
+        entries = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        log.warning("Batch scoring response JSON was invalid; falling back per-job")
+        return {}
+
+    out: dict[str, dict] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            idx = int(entry.get("n", 0))
+            score = int(entry.get("score", 0))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= idx <= len(jobs)) or not (1 <= score <= 10):
+            continue
+        job = jobs[idx - 1]
+        out[job["url"]] = {
+            "score": score,
+            "keywords": str(entry.get("keywords", "")),
+            "reasoning": str(entry.get("reasoning", "")),
+        }
+    return out
 
 
 def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
@@ -139,8 +215,19 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     errors = 0
     results: list[dict] = []
 
+    batch_n = _batch_size()
+    pending: list[dict] = list(jobs)
+    scored_map: dict[str, dict] = {}
+    while pending:
+        chunk, pending = pending[:batch_n], pending[batch_n:]
+        if len(chunk) > 1:
+            scored_map.update(score_jobs_batch(resume_text, chunk))
+        for job in chunk:
+            if job["url"] not in scored_map:
+                scored_map[job["url"]] = score_job(resume_text, job)
+
     for job in jobs:
-        result = score_job(resume_text, job)
+        result = dict(scored_map.get(job["url"]) or {"score": None, "keywords": "", "reasoning": "missing"})
         result["url"] = job["url"]
         completed += 1
 

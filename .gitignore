@@ -48,3 +48,6 @@ PRE-FLIGHT-REVIEW.md
 
 # frontend
 web/app/node_modules/
+
+# Codex spec scaffolding (vendored references)
+docs/specs/reference/

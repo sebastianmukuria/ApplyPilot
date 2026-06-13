@@ -16,9 +16,13 @@ you** and handing you the open browser for the final Submit.
 *([higher-quality video](docs/demo.mp4))*
 
 > Forked from [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot).
-> This fork adds the control-panel GUI above, supervised applies with human
-> hand-off + Telegram alerts, a fixed master-résumé mode, selectable salary
-> strategies, live LLM cost tracking, and a long list of safety fixes.
+> This fork adds the Flight Deck web app above, a first-run setup wizard for
+> non-developers, supervised applies with hand-off + phone pings, **autopilot
+> batch applying**, in-app pipeline runs, **Gmail response tracking with a
+> pipeline radar**, DOCX output, a résumé library, selectable salary
+> strategies, live cost tracking, and a long list of speed and safety fixes.
+> **A Claude Code subscription alone runs the entire thing** — no API keys
+> required.
 
 ---
 

@@ -324,13 +324,26 @@ def _run_stage_streaming(
 # ---------------------------------------------------------------------------
 
 def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal") -> dict:
-    """Execute stages one at a time (original behavior)."""
+                    validation_mode: str = "normal", on_stage=None) -> dict:
+    """Execute stages one at a time (original behavior).
+
+    on_stage(name, None) fires when a stage starts; on_stage(name, result)
+    when it finishes — used by the web app's progress reporting. Best-effort.
+    """
     results: list[dict] = []
     errors: dict[str, str] = {}
     pipeline_start = time.time()
 
+    def _notify_stage(name, payload):
+        if on_stage is None:
+            return
+        try:
+            on_stage(name, payload)
+        except Exception:  # noqa: BLE001 — progress must never break the run
+            pass
+
     for name in ordered:
+        _notify_stage(name, None)
         meta = STAGE_META[name]
         console.print(f"\n{'=' * 70}")
         console.print(f"  [bold]STAGE: {name}[/bold] — {meta['desc']}")
@@ -348,6 +361,7 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
             if name in ("discover", "enrich"):
                 kwargs["workers"] = workers
             result = runner(**kwargs)
+            _notify_stage(name, result if isinstance(result, dict) else {"status": "ok"})
             elapsed = time.time() - t0
 
             status = "ok"
@@ -448,6 +462,7 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
+    on_stage=None,
 ) -> dict:
     """Run pipeline stages.
 
@@ -501,7 +516,8 @@ def run_pipeline(
                                 validation_mode=validation_mode)
     else:
         result = _run_sequential(ordered, min_score, workers=workers,
-                                 validation_mode=validation_mode)
+                                 validation_mode=validation_mode,
+                                 on_stage=on_stage)
 
     # Summary table
     console.print(f"\n{'=' * 70}")

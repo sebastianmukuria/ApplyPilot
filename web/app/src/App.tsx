@@ -4,6 +4,7 @@ import { api, type Job, type RunsResponse, type Stats } from './lib/api'
 import { useAlertPrefs, useRunAlerts } from './lib/alerts'
 import { DECK } from './lib/motion'
 import { CommandBar, type View } from './components/CommandBar'
+import { Onboarding, type OnboardingState } from './components/Onboarding'
 import { FlightLog } from './components/EasterEgg'
 import { useFlightLog } from './lib/useFlightLog'
 import { SettingsSheet } from './components/SettingsSheet'
@@ -22,6 +23,23 @@ export default function App() {
   const { tap, armed } = useFlightLog()
   const [alertPrefs, setAlertPrefs] = useAlertPrefs()
   useRunAlerts(runs, alertPrefs)
+  const [onboarding, setOnboarding] = useState<OnboardingState | null>(null)
+  const [showWizard, setShowWizard] = useState(false)
+
+  useEffect(() => {
+    // feature-detected: only exists once the onboarding backend lands
+    fetch('/api/onboarding')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((ob: OnboardingState | null) => {
+        if (!ob) return
+        setOnboarding(ob)
+        const dismissed = localStorage.getItem('ap.onboard.dismissed') === '1'
+        if (!dismissed && (!ob.resume_ready || !ob.profile_ready || !ob.searches_ready)) {
+          setShowWizard(true)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const refresh = useCallback(() => {
     setRefreshKey((k) => k + 1)
@@ -84,6 +102,18 @@ export default function App() {
         </AnimatePresence>
       </main>
 
+      <AnimatePresence>
+        {showWizard && onboarding && (
+          <Onboarding
+            state={onboarding}
+            onDone={() => {
+              localStorage.setItem('ap.onboard.dismissed', '1')
+              setShowWizard(false)
+              refresh()
+            }}
+          />
+        )}
+      </AnimatePresence>
       <SettingsSheet
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -91,6 +121,7 @@ export default function App() {
         onModel={setModel}
         alertPrefs={alertPrefs}
         onAlertPrefs={setAlertPrefs}
+        onOpenWizard={onboarding ? () => setShowWizard(true) : undefined}
       />
       <FlightLog trigger={armed} applied={(stats?.funnel.applied ?? 0) + (stats?.funnel.handoff ?? 0)} />
     </div>

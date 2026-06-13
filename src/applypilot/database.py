@@ -75,6 +75,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
       - Apply:      applied_at, apply_status, apply_error, apply_attempts,
                    agent_id, last_attempted_at, apply_duration_ms, apply_task_id,
                    verification_confidence
+      - Outcomes:   outcome, outcome_at, outcome_source
 
     Args:
         db_path: Override the default DB_PATH.
@@ -131,7 +132,12 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             last_attempted_at     TEXT,
             apply_duration_ms     INTEGER,
             apply_task_id         TEXT,
-            verification_confidence TEXT
+            verification_confidence TEXT,
+
+            -- Application outcomes
+            outcome               TEXT,
+            outcome_at            TEXT,
+            outcome_source        TEXT
         )
     """)
     conn.commit()
@@ -145,6 +151,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     # Run migrations for any columns added after initial schema
     ensure_columns(conn)
+    ensure_app_events(conn)
 
     return conn
 
@@ -190,6 +197,26 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_duration_ms": "INTEGER",
     "apply_task_id": "TEXT",
     "verification_confidence": "TEXT",
+    # Outcomes
+    "outcome": "TEXT",
+    "outcome_at": "TEXT",
+    "outcome_source": "TEXT",
+}
+
+
+_APP_EVENTS_COLUMNS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY",
+    "message_id": "TEXT UNIQUE",
+    "thread_id": "TEXT",
+    "job_url": "TEXT",
+    "company": "TEXT",
+    "role": "TEXT",
+    "event_type": "TEXT",
+    "source": "TEXT",
+    "confidence": "REAL",
+    "email_ts": "TEXT",
+    "subject": "TEXT",
+    "created_at": "TEXT",
 }
 
 
@@ -226,6 +253,41 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
     if added:
         conn.commit()
 
+    return added
+
+
+def ensure_app_events(conn: sqlite3.Connection | None = None) -> list[str]:
+    """Create and forward-migrate the app_events table."""
+    if conn is None:
+        conn = get_connection()
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_events (
+            id          INTEGER PRIMARY KEY,
+            message_id  TEXT UNIQUE,
+            thread_id   TEXT,
+            job_url     TEXT,
+            company     TEXT,
+            role        TEXT,
+            event_type  TEXT,
+            source      TEXT,
+            confidence  REAL,
+            email_ts    TEXT,
+            subject     TEXT,
+            created_at  TEXT
+        )
+    """)
+
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(app_events)").fetchall()}
+    added = []
+    for col, dtype in _APP_EVENTS_COLUMNS.items():
+        if col not in existing:
+            if "PRIMARY KEY" in dtype or "UNIQUE" in dtype:
+                continue
+            conn.execute(f"ALTER TABLE app_events ADD COLUMN {col} {dtype}")
+            added.append(col)
+
+    conn.commit()
     return added
 
 

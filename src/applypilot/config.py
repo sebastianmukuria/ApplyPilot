@@ -226,11 +226,14 @@ def get_tier() -> int:
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    has_claude = shutil.which("claude") is not None
+    # A Claude Code subscription alone satisfies the AI tier: the pipeline
+    # (scoring/tailoring/covers) runs through the claude-cli provider.
+    has_llm = has_claude or any(
+        os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")
+    )
     if not has_llm:
         return 1
-
-    has_claude = shutil.which("claude") is not None
     try:
         get_chrome_path()
         has_chrome = True
@@ -258,8 +261,13 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
-        missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
+    if required >= 2 and not shutil.which("claude") and not any(
+        os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")
+    ):
+        missing.append(
+            "an AI engine — install Claude Code ([bold]https://claude.com/claude-code[/bold]) "
+            "or set GEMINI_API_KEY via [bold]applypilot init[/bold]"
+        )
     if required >= 3:
         if not shutil.which("claude"):
             missing.append("Claude Code CLI — install from [bold]https://claude.ai/code[/bold]")

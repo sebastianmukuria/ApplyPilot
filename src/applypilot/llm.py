@@ -1,62 +1,225 @@
+"""Provider layer for ApplyPilot pipeline LLM calls.
+
+Provider selection is stage-aware:
+  APPLYPILOT_{COVER,ANSWER,SCORE,TAILOR}_PROVIDER
+  APPLYPILOT_PIPELINE_PROVIDER
+  auto-detect from GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL
+
+API providers use ``LLM_MODEL`` as a model override. Claude CLI uses
+``APPLYPILOT_CLAUDE_MODEL`` and records subscription-covered ledger rows.
 """
-Unified LLM client for ApplyPilot.
 
-Auto-detects provider from environment:
-  GEMINI_API_KEY  -> Google Gemini (default: gemini-2.0-flash)
-  OPENAI_API_KEY  -> OpenAI (default: gpt-4o-mini)
-  LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
+from __future__ import annotations
 
-LLM_MODEL env var overrides the model name for any provider.
-"""
-
+import json
 import logging
 import os
+import shutil
+import subprocess
+import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Mapping, Protocol
 
 import httpx
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Provider detection
+# Provider detection / selection
 # ---------------------------------------------------------------------------
 
-def _detect_provider() -> tuple[str, str, str]:
-    """Return (base_url, model, api_key) based on environment variables.
+_GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+_GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-    Reads env at call time (not module import time) so that load_env() called
-    in _bootstrap() is always visible here.
+ALLOWED_PROVIDERS = ("gemini", "openai", "local", "claude-cli")
+_STAGE_PROVIDER_ENV = {
+    "cover": "APPLYPILOT_COVER_PROVIDER",
+    "answer": "APPLYPILOT_ANSWER_PROVIDER",
+    "score": "APPLYPILOT_SCORE_PROVIDER",
+    "tailor": "APPLYPILOT_TAILOR_PROVIDER",
+    "track": "APPLYPILOT_TRACK_PROVIDER",
+}
+
+
+class ChatClient(Protocol):
+    """Common interface used by pipeline call sites."""
+
+    def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> str:
+        ...
+
+    def ask(self, prompt: str, **kwargs) -> str:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    provider: str
+    base_url: str
+    model: str
+    api_key: str = ""
+
+
+def _normalize_stage(stage: str | None) -> str | None:
+    if stage is None:
+        return None
+    stage_key = stage.strip().lower()
+    if not stage_key:
+        return None
+    if stage_key not in _STAGE_PROVIDER_ENV:
+        valid = ", ".join(sorted(_STAGE_PROVIDER_ENV))
+        raise RuntimeError(f"Unknown LLM stage '{stage}'. Expected one of: {valid}.")
+    return stage_key
+
+
+def _validate_provider(value: str, source: str) -> str:
+    provider = value.strip().lower()
+    if provider not in ALLOWED_PROVIDERS:
+        allowed = ", ".join(ALLOWED_PROVIDERS)
+        raise RuntimeError(f"Unknown LLM provider '{value}' in {source}. Expected one of: {allowed}.")
+    return provider
+
+
+def _provider_override(stage: str | None, env: Mapping[str, str]) -> tuple[str, str] | None:
+    stage_key = _normalize_stage(stage)
+    if stage_key:
+        var = _STAGE_PROVIDER_ENV[stage_key]
+        if env.get(var, "").strip():
+            return env[var], var
+
+    var = "APPLYPILOT_PIPELINE_PROVIDER"
+    value = env.get(var, "").strip()
+    if value and value.lower() != "auto":
+        return env[var], var
+
+    return None
+
+
+def _claude_cli_available() -> bool:
+    return shutil.which("claude") is not None
+
+
+def _auto_provider_name(
+    env: Mapping[str, str],
+    claude_available: bool | None = None,
+) -> str | None:
+    """Auto-detection order. A Claude Code subscription alone runs the ENTIRE
+    pipeline (discovery scoring included) -- API keys are optional
+    accelerators. An explicit LLM_URL is a deliberate local-model setup and
+    outranks it.
     """
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    local_url = os.environ.get("LLM_URL", "")
-    model_override = os.environ.get("LLM_MODEL", "")
+    if env.get("LLM_URL", "").strip():
+        return "local"
+    if claude_available if claude_available is not None else _claude_cli_available():
+        return "claude-cli"
+    if env.get("GEMINI_API_KEY", "").strip():
+        return "gemini"
+    if env.get("OPENAI_API_KEY", "").strip():
+        return "openai"
+    return None
 
-    if gemini_key and not local_url:
-        return (
-            "https://generativelanguage.googleapis.com/v1beta/openai",
-            model_override or "gemini-2.0-flash",
-            gemini_key,
-        )
 
-    if openai_key and not local_url:
-        return (
-            "https://api.openai.com/v1",
-            model_override or "gpt-4o-mini",
-            openai_key,
-        )
+def resolve_provider_name(
+    stage: str | None = None,
+    env: Mapping[str, str] | None = None,
+    *,
+    default: str | None = None,
+    claude_available: bool | None = None,
+) -> str:
+    """Resolve the provider name without constructing a client.
 
-    if local_url:
-        return (
-            local_url.rstrip("/"),
-            model_override or "local-model",
-            os.environ.get("LLM_API_KEY", ""),
-        )
+    ``default`` is for UI/settings surfaces that must render even before the
+    user has configured credentials. Runtime client creation leaves it unset so
+    the historical "No LLM provider configured" error is preserved.
+    """
+    env_map = os.environ if env is None else env
+    override = _provider_override(stage, env_map)
+    if override:
+        return _validate_provider(*override)
+
+    auto = _auto_provider_name(env_map, claude_available=claude_available)
+    if auto:
+        return auto
+
+    if default is not None:
+        return _validate_provider(default, "default")
 
     raise RuntimeError(
         "No LLM provider configured. "
         "Set GEMINI_API_KEY, OPENAI_API_KEY, or LLM_URL in your environment."
     )
+
+
+def _provider_spec(provider: str, env: Mapping[str, str]) -> ProviderSpec:
+    model_override = env.get("LLM_MODEL", "").strip()
+
+    if provider == "gemini":
+        api_key = env.get("GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is required when the LLM provider is gemini.")
+        return ProviderSpec(
+            provider="gemini",
+            base_url=_GEMINI_COMPAT_BASE,
+            model=model_override or "gemini-2.0-flash",
+            api_key=api_key,
+        )
+
+    if provider == "openai":
+        api_key = env.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is required when the LLM provider is openai.")
+        return ProviderSpec(
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            model=model_override or "gpt-4o-mini",
+            api_key=api_key,
+        )
+
+    if provider == "local":
+        local_url = env.get("LLM_URL", "").strip()
+        if not local_url:
+            raise RuntimeError("LLM_URL is required when the LLM provider is local.")
+        return ProviderSpec(
+            provider="local",
+            base_url=local_url.rstrip("/"),
+            model=model_override or "local-model",
+            api_key=env.get("LLM_API_KEY", ""),
+        )
+
+    if provider == "claude-cli":
+        return ProviderSpec(
+            provider="claude-cli",
+            base_url="claude-cli",
+            model=env.get("APPLYPILOT_CLAUDE_MODEL", "").strip() or "haiku",
+        )
+
+    raise RuntimeError(f"Unsupported LLM provider: {provider}")
+
+
+def _resolve_provider(stage: str | None = None) -> ProviderSpec:
+    """Resolve provider configuration from the current environment."""
+    provider = resolve_provider_name(stage)
+    return _provider_spec(provider, os.environ)
+
+
+def _detect_provider() -> tuple[str, str, str]:
+    """Return (base_url, model, api_key) for legacy callers/tests.
+
+    Reads env at call time (not module import time) so that load_env() called
+    in _bootstrap() is always visible here.
+    """
+    spec = _resolve_provider()
+    return spec.base_url, spec.model, spec.api_key
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +228,36 @@ def _detect_provider() -> tuple[str, str, str]:
 
 _MAX_RETRIES = 5
 _TIMEOUT = 120  # seconds
+_CLAUDE_TIMEOUT = 180  # seconds
 
 # Base wait on first 429/503 (doubles each retry, caps at 60s).
 # Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
 _RATE_LIMIT_BASE_WAIT = 10
 
 
-_GEMINI_COMPAT_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
-_GEMINI_NATIVE_BASE = "https://generativelanguage.googleapis.com/v1beta"
+def _usage_file() -> Path:
+    from applypilot.config import APP_DIR
+
+    return Path(os.environ.get("APPLYPILOT_DIR", str(APP_DIR))) / "llm_usage.jsonl"
+
+
+def _append_usage_record(record: dict) -> None:
+    path = _usage_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
+def _utc_ts() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _gemini_thinking_budget() -> int:
+    raw = os.environ.get("APPLYPILOT_GEMINI_THINKING_BUDGET", "0").strip() or "0"
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError("APPLYPILOT_GEMINI_THINKING_BUDGET must be an integer.") from exc
 
 
 class LLMClient:
@@ -103,14 +288,13 @@ class LLMClient:
         if prompt_tokens is None and completion_tokens is None:
             return
         try:
-            import json as _json
-            from datetime import datetime as _dt, timezone as _tz
-            from applypilot.config import APP_DIR
-            rec = {"ts": _dt.now(_tz.utc).isoformat(timespec="seconds"),
-                   "model": self.model,
-                   "in": int(prompt_tokens or 0), "out": int(completion_tokens or 0)}
-            with open(APP_DIR / "llm_usage.jsonl", "a", encoding="utf-8") as fh:
-                fh.write(_json.dumps(rec) + "\n")
+            rec = {
+                "ts": _utc_ts(),
+                "model": self.model,
+                "in": int(prompt_tokens or 0),
+                "out": int(completion_tokens or 0),
+            }
+            _append_usage_record(rec)
         except Exception:
             log.debug("Could not record LLM usage", exc_info=True)
 
@@ -149,6 +333,7 @@ class LLMClient:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
+                "thinkingConfig": {"thinkingBudget": _gemini_thinking_budget()},
             },
         }
         if system_parts:
@@ -186,6 +371,15 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        model_lower = self.model.lower()
+        if "gemini" in model_lower and "lite" not in model_lower:
+            # Gemini thinking models can spend max_tokens on hidden reasoning
+            # and return empty resume/letter text; cap thinking explicitly.
+            payload["google"] = {
+                "thinking_config": {
+                    "thinking_budget": _gemini_thinking_budget(),
+                },
+            }
 
         resp = self._client.post(
             f"{self.base_url}/chat/completions",
@@ -297,6 +491,113 @@ class LLMClient:
         self._client.close()
 
 
+# Pipeline threads (batched scoring workers, the answers endpoint) must not
+# spawn unbounded claude processes; two concurrent CLI calls is plenty.
+_CLAUDE_CLI_SLOTS = threading.Semaphore(2)
+
+
+class ClaudeCLIClient:
+    """Pipeline client backed by the local Claude CLI subscription."""
+
+    def __init__(self, model: str = "haiku") -> None:
+        self.model = model
+
+    def _flatten_messages(self, messages: list[dict]) -> str:
+        system_parts: list[str] = []
+        conversation: list[str] = []
+
+        for msg in messages:
+            role = str(msg.get("role", "user")).strip().lower() or "user"
+            content = str(msg.get("content", ""))
+            if role == "system":
+                system_parts.append(content)
+            else:
+                conversation.append(f"{role.title()}:\n{content}")
+
+        parts: list[str] = []
+        if system_parts:
+            parts.append("System instructions:\n" + "\n\n".join(system_parts))
+        if conversation:
+            parts.append("Conversation:\n" + "\n\n".join(conversation))
+        return "\n\n".join(parts).strip()
+
+    def _log_usage(self, usage: dict, total_cost_usd: float | int | str | None) -> None:
+        try:
+            rec = {
+                "ts": _utc_ts(),
+                "model": f"claude-{self.model} (pipeline)",
+                "in": int(usage.get("input_tokens", 0) or 0),
+                "out": int(usage.get("output_tokens", 0) or 0),
+                "cost": round(float(total_cost_usd or 0), 6),
+                "kind": "subscription",
+            }
+            _append_usage_record(rec)
+        except Exception:
+            log.debug("Could not record claude usage", exc_info=True)
+
+    def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Run ``claude -p`` and return the JSON result text.
+
+        ``temperature`` and ``max_tokens`` are accepted for API parity with
+        LLMClient; the Claude CLI prompt mode does not expose those knobs here.
+        """
+        del temperature, max_tokens
+        exe = shutil.which("claude")
+        if not exe:
+            raise RuntimeError(
+                "Claude CLI provider selected but 'claude' was not found on PATH. "
+                "Install Claude Code CLI or choose another pipeline provider."
+            )
+
+        with _CLAUDE_CLI_SLOTS:
+            proc = subprocess.run(
+                [
+                    exe,
+                    "-p",
+                    "--model",
+                    self.model,
+                    "--output-format",
+                    "json",
+                    "--no-session-persistence",
+                ],
+                input=self._flatten_messages(messages),
+                text=True,
+                capture_output=True,
+                timeout=_CLAUDE_TIMEOUT,
+                check=False,
+            )
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "").strip()[-1000:] or "no stderr"
+            raise RuntimeError(
+                f"Claude CLI failed with exit code {proc.returncode}: {stderr_tail}"
+            )
+
+        try:
+            data = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Claude CLI returned invalid JSON.") from exc
+
+        result = data.get("result")
+        if not isinstance(result, str):
+            raise RuntimeError("Claude CLI JSON response did not include result text.")
+
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        self._log_usage(usage, data.get("total_cost_usd"))
+        return result
+
+    def ask(self, prompt: str, **kwargs) -> str:
+        """Convenience: single user prompt -> assistant response."""
+        return self.chat([{"role": "user", "content": prompt}], **kwargs)
+
+    def close(self) -> None:
+        return None
+
+
 class _GeminiCompatForbidden(Exception):
     """Sentinel: Gemini OpenAI-compat returned 403. Switch to native API."""
     def __init__(self, response: httpx.Response) -> None:
@@ -308,14 +609,30 @@ class _GeminiCompatForbidden(Exception):
 # Singleton
 # ---------------------------------------------------------------------------
 
-_instance: LLMClient | None = None
+_instance: ChatClient | None = None
+_client_cache: dict[tuple[str | None, ProviderSpec], ChatClient] = {}
 
 
-def get_client() -> LLMClient:
-    """Return (or create) the module-level LLMClient singleton."""
+def _build_client(spec: ProviderSpec) -> ChatClient:
+    if spec.provider == "claude-cli":
+        return ClaudeCLIClient(spec.model)
+    return LLMClient(spec.base_url, spec.model, spec.api_key)
+
+
+def get_client(stage: str | None = None) -> ChatClient:
+    """Return a cached LLM client for the requested pipeline stage."""
     global _instance
-    if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
-    return _instance
+    stage_key = _normalize_stage(stage)
+    if stage_key is None and _instance is not None:
+        return _instance
+
+    spec = _resolve_provider(stage_key)
+    cache_key = (stage_key, spec)
+    client = _client_cache.get(cache_key)
+    if client is None:
+        log.info("LLM provider: %s  model: %s", spec.provider, spec.model)
+        client = _build_client(spec)
+        _client_cache[cache_key] = client
+    if stage_key is None:
+        _instance = client
+    return client
