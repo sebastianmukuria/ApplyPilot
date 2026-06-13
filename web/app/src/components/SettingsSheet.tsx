@@ -2,8 +2,11 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { X } from '@phosphor-icons/react'
+import { Books } from '@phosphor-icons/react'
 import { api, type Settings } from '../lib/api'
+import { enableBrowserNotifications, type AlertPrefs } from '../lib/alerts'
 import { DECK } from '../lib/motion'
+import { ResumeLibrary } from './ResumeLibrary'
 import { Eyebrow } from './ui'
 
 const MODELS = ['sonnet', 'haiku', 'opus']
@@ -18,14 +21,19 @@ export function SettingsSheet({
   onClose,
   model,
   onModel,
+  alertPrefs,
+  onAlertPrefs,
 }: {
   open: boolean
   onClose: () => void
   model: string
   onModel: (m: string) => void
+  alertPrefs: AlertPrefs
+  onAlertPrefs: (p: AlertPrefs) => void
 }) {
   const [s, setS] = useState<Settings | null>(null)
   const [saved, setSaved] = useState(false)
+  const [libOpen, setLibOpen] = useState(false)
 
   useEffect(() => {
     if (open) api.settings().then(setS).catch(() => {})
@@ -96,11 +104,17 @@ export function SettingsSheet({
                     desc={
                       s.master_resume_exists
                         ? 'Every application uploads your one chosen PDF; only cover letters are generated.'
-                        : 'Drop a PDF at ~/.applypilot/master_resume.pdf to enable.'
+                        : 'Pick or upload a PDF in the library to enable.'
                     }
                   >
                     <Switch on={s.fixed_resume} set={(v) => patch({ fixed_resume: v })} />
                   </Row>
+                  <button
+                    onClick={() => setLibOpen(true)}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl py-2.5 text-[12.5px] text-mut ring-1 ring-white/[0.08] transition-all duration-300 hover:text-ink hover:ring-white/20"
+                  >
+                    <Books weight="light" size={15} /> Résumé library — preview &amp; choose the master
+                  </button>
 
                   <div>
                     <div className="mb-2 text-[13px] text-ink">Salary answers</div>
@@ -132,6 +146,23 @@ export function SettingsSheet({
                     </div>
                   </div>
 
+                  <div className="space-y-3 border-t border-white/[0.07] pt-4">
+                    <Eyebrow>Alerts</Eyebrow>
+                    <Row title="Browser notifications" desc="OS banner when a run needs you or finishes.">
+                      <Switch
+                        on={alertPrefs.browser}
+                        set={async (v) => {
+                          if (v && !(await enableBrowserNotifications())) return
+                          onAlertPrefs({ ...alertPrefs, browser: v })
+                        }}
+                      />
+                    </Row>
+                    <Row title="Chime" desc="A soft tone when a run needs you.">
+                      <Switch on={alertPrefs.chime} set={(v) => onAlertPrefs({ ...alertPrefs, chime: v })} />
+                    </Row>
+                    <ChannelFields s={s} onSaved={() => api.settings().then(setS).catch(() => {})} />
+                  </div>
+
                   <div className="flex items-center gap-4 border-t border-white/[0.07] pt-4 text-[11.5px] text-faint">
                     <span className="flex items-center gap-1.5">
                       <span className={`h-1.5 w-1.5 rounded-full ${s.telegram_connected ? 'bg-sage' : 'bg-white/20'}`} />
@@ -144,6 +175,13 @@ export function SettingsSheet({
               )}
             </div>
           </motion.div>
+          <ResumeLibrary
+            open={libOpen}
+            onClose={() => {
+              setLibOpen(false)
+              api.settings().then(setS).catch(() => {})
+            }}
+          />
         </motion.div>
       )}
     </AnimatePresence>
@@ -187,5 +225,54 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
     >
       {children}
     </button>
+  )
+}
+
+
+interface ChannelSettings extends Settings {
+  ntfy_configured?: boolean
+  webhook_configured?: boolean
+  discord_configured?: boolean
+  slack_configured?: boolean
+}
+
+/** Push channels (ntfy / webhooks) — write-only fields; rendered only once the
+ * backend exposes the *_configured flags. */
+function ChannelFields({ s, onSaved }: { s: ChannelSettings; onSaved: () => void }) {
+  if (s.ntfy_configured === undefined) return null
+  const channels: { key: string; label: string; placeholder: string; configured: boolean }[] = [
+    { key: 'ntfy_topic', label: 'ntfy topic', placeholder: 'e.g. applypilot-x7k2', configured: !!s.ntfy_configured },
+    { key: 'discord_webhook_url', label: 'Discord webhook', placeholder: 'https://discord.com/api/webhooks/…', configured: !!s.discord_configured },
+    { key: 'slack_webhook_url', label: 'Slack webhook', placeholder: 'https://hooks.slack.com/…', configured: !!s.slack_configured },
+    { key: 'webhook_url', label: 'Custom webhook', placeholder: 'https://…', configured: !!s.webhook_configured },
+  ]
+  return (
+    <div className="space-y-2">
+      {channels.map((c) => (
+        <div key={c.key} className="flex items-center gap-2.5">
+          <span className="flex w-32 flex-none items-center gap-1.5 text-[11.5px] text-mut">
+            <span className={`h-1.5 w-1.5 rounded-full ${c.configured ? 'bg-sage' : 'bg-white/15'}`} />
+            {c.label}
+          </span>
+          <input
+            className="min-w-0 flex-1 rounded-xl bg-white/[0.03] px-3 py-2 text-[12px] text-ink ring-1 ring-white/[0.06] outline-none placeholder:text-faint focus:ring-clay/40"
+            placeholder={c.configured ? 'configured — paste to replace, empty to remove' : c.placeholder}
+            defaultValue=""
+            onBlur={async (e) => {
+              const v = e.target.value.trim()
+              if (!v && !c.configured) return
+              if (!v && c.configured && !confirm(`Remove the ${c.label}?`)) return
+              try {
+                await api.saveSettings({ [c.key]: v } as Partial<Settings>)
+                e.target.value = ''
+                onSaved()
+              } catch (err) {
+                alert(String(err))
+              }
+            }}
+          />
+        </div>
+      ))}
+    </div>
   )
 }

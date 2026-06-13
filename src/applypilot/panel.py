@@ -20,6 +20,7 @@ ENV = APP / ".env"
 PROFILE = APP / "profile.json"
 HIDDEN_FILE = APP / "gui_hidden.json"
 ACTIVE_FILE = APP / "gui_active_run.json"
+RUNS_FILE = APP / "gui_runs.json"
 PREFS_FILE = APP / "gui_prefs.json"
 
 STAFFING = ["robert half", "fitt talent", "why hiring", "thecorporate", "crossing hurdles", "recruit", "staffing"]
@@ -58,6 +59,7 @@ def paths() -> dict[str, Path]:
         "PROFILE": app / "profile.json",
         "HIDDEN_FILE": app / "gui_hidden.json",
         "ACTIVE_FILE": app / "gui_active_run.json",
+        "RUNS_FILE": app / "gui_runs.json",
         "PREFS_FILE": app / "gui_prefs.json",
         "USAGE_FILE": app / "llm_usage.jsonl",
     }
@@ -87,7 +89,12 @@ def read_env() -> dict:
 
 
 def write_env(updates: dict):
-    d = read_env(); d.update(updates)
+    d = read_env()
+    for k, v in updates.items():
+        if v is None:
+            d.pop(k, None)
+        else:
+            d[k] = v
     env = _path("ENV")
     env.parent.mkdir(parents=True, exist_ok=True)
     env.write_text("\n".join(["# ApplyPilot configuration"] + [f"{k}={v}" for k, v in d.items()]) + "\n")
@@ -223,6 +230,172 @@ def launch_apply(url, company, model):
                          stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
     _path("ACTIVE_FILE").write_text(json.dumps(
         {"url": url, "company": company, "log": str(logf), "pid": p.pid, "started": ts, "model": model}))
+
+
+def _pid_alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def _parse_run_started(started: str | None) -> datetime | None:
+    if not started:
+        return None
+    for fmt in ("%Y%m%d_%H%M%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(started[:19], fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def _save_runs(runs: dict) -> None:
+    runs_file = _path("RUNS_FILE")
+    runs_file.parent.mkdir(parents=True, exist_ok=True)
+    runs_file.write_text(json.dumps(runs, indent=2, sort_keys=True))
+
+
+def load_runs(prune: bool = True, now: datetime | None = None) -> dict:
+    """Load GUI run registry, optionally pruning dead entries after grace."""
+    runs_file = _path("RUNS_FILE")
+    if not runs_file.exists():
+        return {}
+    try:
+        raw = json.loads(runs_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    runs = {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    if not prune:
+        return runs
+
+    now_dt = now or datetime.now()
+    kept = {}
+    changed = False
+    for run_id, run in runs.items():
+        if _pid_alive(run.get("pid")):
+            kept[run_id] = run
+            continue
+        started = _parse_run_started(run.get("started"))
+        if started is not None and now_dt.tzinfo is not None and started.tzinfo is None:
+            started = started.replace(tzinfo=now_dt.tzinfo)
+        if started is None or (now_dt - started).total_seconds() < 600:
+            kept[run_id] = run
+        else:
+            changed = True
+    if changed:
+        _save_runs(kept)
+    return kept
+
+
+def max_gui_runs() -> int:
+    try:
+        return max(1, int(os.environ.get("APPLYPILOT_MAX_RUNS", "3")))
+    except ValueError:
+        return 3
+
+
+def alloc_slot(max_slots: int) -> int | None:
+    live_slots = {
+        int(run.get("worker_slot", 0))
+        for run in load_runs().values()
+        if _pid_alive(run.get("pid"))
+    }
+    for slot in range(max_slots):
+        if slot not in live_slots:
+            return slot
+    return None
+
+
+def launch_apply_slot(url, company, model, slot: int) -> str:
+    logdir = _path("LOGDIR")
+    logdir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = f"{ts}_w{slot}"
+    logf = logdir / f"gui_apply_{ts}_w{slot}.log"
+    reset_job(url)
+    # 0600: agent stderr can include URLs carrying the Telegram bot token
+    fh = open(os.open(str(logf), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
+    p = subprocess.Popen(
+        [
+            sys.executable, "-m", "applypilot", "apply",
+            "--url", url, "--model", model, "--worker-slot", str(slot),
+        ],
+        stdout=fh,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    run = {
+        "url": url,
+        "company": company,
+        "model": model,
+        "pid": p.pid,
+        "worker_slot": slot,
+        "log": str(logf),
+        "started": ts,
+    }
+    runs = load_runs(prune=False)
+    runs[run_id] = run
+    _save_runs(runs)
+    if slot == 0:
+        _path("ACTIVE_FILE").write_text(json.dumps(
+            {"url": url, "company": company, "log": str(logf), "pid": p.pid, "started": ts, "model": model}))
+    return run_id
+
+
+def _terminate_process_group(pid) -> bool:
+    try:
+        pgid = os.getpgid(int(pid))
+        os.killpg(pgid, signal.SIGTERM)
+        time.sleep(1)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _kill_worker_port(worker_slot: int) -> None:
+    from applypilot.apply.chrome import BASE_CDP_PORT, _kill_on_port, is_port_detached
+
+    port = BASE_CDP_PORT + int(worker_slot)
+    if not is_port_detached(port):
+        _kill_on_port(port)
+
+
+def stop_run_id(run_id: str) -> bool:
+    runs = load_runs(prune=False)
+    run = runs.get(run_id)
+    if not run:
+        return False
+
+    if run.get("pid"):
+        _terminate_process_group(run.get("pid"))
+    _kill_worker_port(int(run.get("worker_slot", 0)))
+
+    runs.pop(run_id, None)
+    _save_runs(runs)
+
+    active_file = _path("ACTIVE_FILE")
+    if active_file.exists():
+        try:
+            active = json.loads(active_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            active = {}
+        if active.get("url") == run.get("url"):
+            active_file.unlink(missing_ok=True)
+    return True
 
 
 def stop_run() -> str:

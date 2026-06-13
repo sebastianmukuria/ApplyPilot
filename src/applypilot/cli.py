@@ -154,6 +154,7 @@ def apply(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions without submitting."),
     headless: bool = typer.Option(False, "--headless", help="Run browsers in headless mode."),
     url: Optional[str] = typer.Option(None, "--url", help="Apply to a specific job URL."),
+    worker_slot: int = typer.Option(0, "--worker-slot", help="Internal GUI worker slot.", hidden=True),
     gen: bool = typer.Option(False, "--gen", help="Generate prompt file for manual debugging instead of running."),
     mark_applied: Optional[str] = typer.Option(None, "--mark-applied", help="Manually mark a job URL as applied."),
     mark_failed: Optional[str] = typer.Option(None, "--mark-failed", help="Manually mark a job URL as failed (provide URL)."),
@@ -261,6 +262,7 @@ def apply(
         dry_run=dry_run,
         continuous=continuous,
         workers=workers,
+        worker_slot=worker_slot,
     )
 
 

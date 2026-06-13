@@ -6,6 +6,7 @@ import {
 } from '@phosphor-icons/react'
 import { api, type Job } from '../lib/api'
 import { DECK } from '../lib/motion'
+import { PdfViewer, type PdfTarget } from './PdfViewer'
 import { FlagChip, GhostAction, IslandButton, ScoreChip, StatusPill } from './ui'
 
 export function JobCard({
@@ -20,6 +21,7 @@ export function JobCard({
   i?: number
 }) {
   const [open, setOpen] = useState(false)
+  const [viewer, setViewer] = useState<PdfTarget | null>(null)
   const [detail, setDetail] = useState<{ resume_preview: string; cover_preview: string } | null>(null)
 
   const toggle = async () => {
@@ -77,12 +79,28 @@ export function JobCard({
             <ArrowSquareOut weight="light" size={14} /> Open
           </GhostAction>
           {job.has_resume && (
-            <GhostAction href={api.resumeUrl(job.url)} download>
+            <GhostAction
+              onClick={() =>
+                setViewer({
+                  title: `Résumé — ${job.company ?? ''}`,
+                  src: api.resumeUrl(job.url, true),
+                  downloadSrc: api.resumeUrl(job.url),
+                })
+              }
+            >
               <FilePdf weight="light" size={14} /> Résumé
             </GhostAction>
           )}
           {job.has_cover && (
-            <GhostAction href={api.coverUrl(job.url)} download>
+            <GhostAction
+              onClick={() =>
+                setViewer({
+                  title: `Cover letter — ${job.company ?? ''}`,
+                  src: api.coverUrl(job.url, true),
+                  downloadSrc: api.coverUrl(job.url),
+                })
+              }
+            >
               <EnvelopeSimple weight="light" size={14} /> Cover
             </GhostAction>
           )}
@@ -147,6 +165,7 @@ export function JobCard({
           )}
         </AnimatePresence>
       </motion.div>
+      <PdfViewer target={viewer} onClose={() => setViewer(null)} />
     </motion.div>
   )
 }

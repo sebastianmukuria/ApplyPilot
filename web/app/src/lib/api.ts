@@ -56,7 +56,10 @@ export interface Stats {
 }
 
 export interface RunStatus {
-  active: boolean
+  active?: boolean
+  run_id?: string
+  worker_slot?: number
+  alive?: boolean
   company?: string
   url?: string
   model?: string
@@ -65,6 +68,21 @@ export interface RunStatus {
   needs_you?: boolean
   done?: boolean
   status?: string | null
+}
+
+export interface RunsResponse {
+  slots: number
+  free: number
+  runs: RunStatus[]
+}
+
+export interface ResumeItem {
+  id: string
+  name: string
+  kind: 'library' | 'base' | 'master'
+  size: number
+  mtime: number
+  is_master: boolean
 }
 
 export interface Settings {
@@ -127,8 +145,8 @@ export const api = {
   stats(): Promise<Stats> {
     return http(`/api/stats`)
   },
-  run(): Promise<RunStatus> {
-    return http(`/api/run`)
+  runs(): Promise<RunsResponse> {
+    return http(`/api/runs`)
   },
   startRun(url: string, model: string, supervised?: boolean) {
     return http<RunStatus>(`/api/run`, {
@@ -136,15 +154,34 @@ export const api = {
       body: JSON.stringify({ url, model, supervised }),
     })
   },
-  stopRun() {
-    return http<{ stopped: string }>(`/api/run/stop`, { method: 'POST' })
+  stopRun(run_id: string) {
+    return http(`/api/run/stop`, { method: 'POST', body: JSON.stringify({ run_id }) })
   },
-  clearRun() {
-    return http(`/api/run/clear`, { method: 'POST' })
+  stopAll() {
+    return http<{ stopped: string }>(`/api/run/stop-all`, { method: 'POST' })
   },
-  runLog(): Promise<{ lines: string }> {
-    return http(`/api/run/log`)
+  clearRun(run_id: string) {
+    return http(`/api/run/clear`, { method: 'POST', body: JSON.stringify({ run_id }) })
   },
+  resumes(): Promise<{ master_exists: boolean; items: ResumeItem[] }> {
+    return http(`/api/resumes`)
+  },
+  selectResume(id: string) {
+    return http<{ master_exists: boolean; items: ResumeItem[] }>(`/api/resumes/select`, {
+      method: 'POST',
+      body: JSON.stringify({ id }),
+    })
+  },
+  async uploadResume(file: File): Promise<ResumeItem> {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch('/api/resumes/upload', { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => '')}`)
+    return res.json()
+  },
+  resumeFileUrl: (id: string, inline = true) =>
+    `/api/resumes/file?id=${encodeURIComponent(id)}${inline ? '&inline=1' : ''}`,
+  masterUrl: (inline = true) => `/api/files/master${inline ? '?inline=1' : ''}`,
   settings(): Promise<Settings> {
     return http(`/api/settings`)
   },
@@ -160,17 +197,19 @@ export const api = {
   genAnswer(body: { company: string; question: string; length?: string; prev?: string }) {
     return http<{ answer: string }>(`/api/answers`, { method: 'POST', body: JSON.stringify(body) })
   },
-  resumeUrl: (url: string) => `/api/files/resume?url=${encodeURIComponent(url)}`,
-  coverUrl: (url: string) => `/api/files/cover?url=${encodeURIComponent(url)}`,
+  resumeUrl: (url: string, inline = false) =>
+    `/api/files/resume?url=${encodeURIComponent(url)}${inline ? '&inline=1' : ''}`,
+  coverUrl: (url: string, inline = false) =>
+    `/api/files/cover?url=${encodeURIComponent(url)}${inline ? '&inline=1' : ''}`,
 }
 
-/** Subscribe to the live-run SSE stream. Returns an unsubscribe fn. */
-export function subscribeRunLog(handlers: {
+/** Subscribe to one run's SSE stream. Returns an unsubscribe fn. */
+export function subscribeRunLog(runId: string, handlers: {
   onLog?: (line: string) => void
   onStatus?: (s: RunStatus) => void
   onEnd?: () => void
 }): () => void {
-  const es = new EventSource('/api/run/log/stream')
+  const es = new EventSource(`/api/run/log/stream?run_id=${encodeURIComponent(runId)}`)
   es.addEventListener('log', (e) => handlers.onLog?.((e as MessageEvent).data))
   es.addEventListener('status', (e) => {
     try {

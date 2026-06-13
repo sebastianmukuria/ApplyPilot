@@ -1,12 +1,11 @@
-// The Flight Deck: hero, funnel band, live run, awaiting-confirmation.
-import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
-import {
-  ArrowSquareOut, BellRinging, Broom, Check, PaperPlaneTilt, Play, StopCircle,
-} from '@phosphor-icons/react'
-import { api, subscribeRunLog, type Job, type RunStatus, type Stats } from '../lib/api'
-import { DECK, stagger } from '../lib/motion'
-import { Bezel, CountUp, Eyebrow, GhostAction, IslandButton, ScoreChip, StatusPill } from '../components/ui'
+// The Flight Deck: hero, funnel band, live runs, awaiting-confirmation.
+import { useEffect, useState } from 'react'
+import { motion } from 'motion/react'
+import { ArrowSquareOut, Check, Play } from '@phosphor-icons/react'
+import { api, type Job, type RunsResponse, type Stats } from '../lib/api'
+import { stagger } from '../lib/motion'
+import { RunStack } from '../components/RunStack'
+import { Bezel, CountUp, Eyebrow, GhostAction, IslandButton, ScoreChip } from '../components/ui'
 
 const FUNNEL: { key: string; label: string }[] = [
   { key: 'total', label: 'Discovered' },
@@ -20,22 +19,23 @@ const FUNNEL: { key: string; label: string }[] = [
 
 export function Deck({
   stats,
-  run,
+  runs,
   onGoQueue,
   onChanged,
   onLaunch,
 }: {
   stats: Stats | null
-  run: RunStatus | null
+  runs: RunsResponse | null
   onGoQueue: () => void
   onChanged: () => void
   onLaunch: (j: Job) => void
 }) {
   const [handoffs, setHandoffs] = useState<Job[]>([])
+  const aliveCount = runs?.runs.filter((r) => r.alive).length ?? 0
 
   useEffect(() => {
     api.handoffs().then((r) => setHandoffs(Array.isArray(r) ? r : r.jobs)).catch(() => {})
-  }, [run?.active, stats?.funnel.handoff])
+  }, [aliveCount, stats?.funnel.handoff])
 
   const funnel = stats?.funnel ?? {}
 
@@ -107,7 +107,7 @@ export function Deck({
       {/* live run + handoffs */}
       <div className="mt-4 grid gap-4 lg:grid-cols-12">
         <Bezel className="lg:col-span-7" i={3}>
-          <LiveRun run={run} onChanged={onChanged} />
+          <RunStack runs={runs} onChanged={onChanged} />
         </Bezel>
 
         <Bezel className="lg:col-span-5" i={4}>
@@ -156,117 +156,5 @@ export function Deck({
         </Bezel>
       </div>
     </motion.div>
-  )
-}
-
-function LiveRun({ run, onChanged }: { run: RunStatus | null; onChanged: () => void }) {
-  const [lines, setLines] = useState<string[]>([])
-  const wellRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!run?.active) {
-      setLines([])
-      return
-    }
-    const off = subscribeRunLog({
-      onLog: (l) => setLines((prev) => [...prev.slice(-400), l]),
-      onEnd: onChanged,
-    })
-    return off
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onChanged is a stable useCallback; re-subscribing per identity churn would drop the stream
-  }, [run?.active, run?.url])
-
-  useEffect(() => {
-    wellRef.current?.scrollTo({ top: wellRef.current.scrollHeight })
-  }, [lines])
-
-  return (
-    <div className="flex h-full min-h-[320px] flex-col p-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <Eyebrow>Live run</Eyebrow>
-        {run?.active && (
-          <div className="flex items-center gap-2">
-            {run.done && run.status && <StatusPill status={run.status} />}
-            {run.done && (
-              <GhostAction
-                onClick={async () => {
-                  if (run.url) await api.markApplied(run.url)
-                  await api.clearRun()
-                  onChanged()
-                }}
-              >
-                <Check weight="light" size={13} /> Mark applied
-              </GhostAction>
-            )}
-            <GhostAction
-              onClick={async () => {
-                await api.stopRun()
-                onChanged()
-              }}
-              title="Kill the run, the agent, and its Chrome"
-            >
-              <StopCircle weight="light" size={13} /> Stop
-            </GhostAction>
-            <GhostAction
-              onClick={async () => {
-                await api.clearRun()
-                onChanged()
-              }}
-            >
-              <Broom weight="light" size={13} /> Clear
-            </GhostAction>
-          </div>
-        )}
-      </div>
-
-      <AnimatePresence mode="wait">
-        {run?.active ? (
-          <motion.div
-            key="active"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex min-h-0 flex-1 flex-col"
-          >
-            {run.needs_you ? (
-              <motion.div
-                initial={{ scale: 0.98 }}
-                animate={{ scale: 1 }}
-                transition={{ duration: 0.5, ease: DECK }}
-                className="mb-3 flex items-center gap-3 rounded-2xl bg-clay/10 px-4 py-3 ring-1 ring-clay/30"
-              >
-                <BellRinging weight="light" size={18} className="animate-pulse text-clay-hi" />
-                <span className="text-[13px] text-clay-hi">
-                  <strong className="font-display tracking-wide">{run.company}</strong> needs you — solve the
-                  CAPTCHA or review &amp; submit in the open Chrome window.
-                </span>
-              </motion.div>
-            ) : (
-              <div className="mb-3 text-[13px] text-mut">
-                {run.done ? 'Run finished — ' : 'Working on '}
-                <span className="font-medium text-ink">{run.company}</span>
-                {!run.done && <span className="text-faint"> · {run.model}</span>}
-              </div>
-            )}
-            <div ref={wellRef} className="logwell min-h-0 flex-1 overflow-auto rounded-2xl bg-white/[0.02] p-4 ring-1 ring-white/[0.05]">
-              {lines.length ? lines.join('\n') : '(connecting to the run…)'}
-            </div>
-          </motion.div>
-        ) : (
-          <motion.div
-            key="idle"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center"
-          >
-            <PaperPlaneTilt weight="thin" size={42} className="text-faint" />
-            <div className="text-[13px] italic text-faint">
-              No run in flight — hit Apply on any card in the queue.
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
   )
 }

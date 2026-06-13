@@ -231,6 +231,11 @@ def _is_detached_port(port: int) -> bool:
     return port in _detached_ports or port in _read_detached()
 
 
+def is_port_detached(port: int) -> bool:
+    """Return True if a CDP port belongs to a handed-off browser."""
+    return _is_detached_port(port)
+
+
 def _wait_for_cdp(port: int, timeout_s: float = 6.0,
                   interval_s: float = 0.25) -> bool:
     """Poll Chrome's CDP version endpoint until it is ready."""

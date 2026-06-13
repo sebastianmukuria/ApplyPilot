@@ -178,6 +178,12 @@ def _urls(data):
     return {j["url"] for j in data["jobs"]}
 
 
+def _write_runs(panel, runs):
+    path = panel.paths()["RUNS_FILE"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(runs))
+
+
 def test_jobs_default_filters_statuses_and_min_score(api):
     client, _, _ = api
     data = client.get("/api/jobs").json()
@@ -280,11 +286,266 @@ def test_stats_and_spend(api):
     assert data["spend"]["calls"] == 1
 
 
-def test_run_empty_and_stop_safe(api):
-    client, _, _ = api
+def test_run_slots_allocate_full_and_reuse_freed_slot(api, monkeypatch):
+    client, _, panel = api
+    monkeypatch.setenv("APPLYPILOT_MAX_RUNS", "3")
+
+    live = set()
+    pids_by_url = {}
+    commands = []
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 100 + len(commands)
+            commands.append(cmd)
+            live.add(self.pid)
+
+    monkeypatch.setattr(panel.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(panel, "_pid_alive", lambda pid: int(pid) in live)
+
+    urls = [
+        "https://jobs.test/strong",
+        "https://jobs.test/failed",
+        "https://jobs.test/in-progress",
+    ]
+    slots = []
+    for url in urls:
+        data = client.post("/api/run", json={"url": url, "model": "sonnet"}).json()
+        slots.append(data["worker_slot"])
+        pids_by_url[url] = 100 + len(commands) - 1
+
+    assert slots == [0, 1, 2]
+    assert all("--worker-slot" in cmd for cmd in commands)
+    assert commands[1][commands[1].index("--worker-slot") + 1] == "1"
+    assert client.get("/api/runs").json()["free"] == 0
+
+    full = client.post("/api/run", json={"url": "https://jobs.test/no-salary"}).json()
+    assert full["detail"] == "no free slot"
+
+    live.remove(pids_by_url["https://jobs.test/failed"])
+    reused = client.post("/api/run", json={"url": "https://jobs.test/no-salary"}).json()
+    assert reused["worker_slot"] == 1
+
+
+def test_run_rejects_duplicate_live_job(api, monkeypatch):
+    client, _, panel = api
+    live = {123}
+
+    class FakePopen:
+        pid = 123
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(panel.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(panel, "_pid_alive", lambda pid: int(pid) in live)
+
+    assert client.post("/api/run", json={"url": "https://jobs.test/strong"}).status_code == 200
+    response = client.post("/api/run", json={"url": "https://jobs.test/strong"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "job already running"
+
+
+def test_targeted_stop_removes_one_registry_entry(api, monkeypatch):
+    client, _, panel = api
+    pids = iter([501, 502])
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.pid = next(pids)
+
+    monkeypatch.setattr(panel.subprocess, "Popen", FakePopen)
+    run0 = panel.launch_apply_slot("https://jobs.test/strong", "Alpha Co", "sonnet", 0)
+    run1 = panel.launch_apply_slot("https://jobs.test/failed", "Beta Labs", "sonnet", 1)
+
+    killed_pids = []
+    killed_slots = []
+    monkeypatch.setattr(panel, "_terminate_process_group", lambda pid: killed_pids.append(pid) or True)
+    monkeypatch.setattr(panel, "_kill_worker_port", lambda slot: killed_slots.append(slot))
+
+    response = client.post("/api/run/stop", json={"run_id": run0})
+    assert response.status_code == 200
+    assert killed_pids == [501]
+    assert killed_slots == [0]
+
+    runs = panel.load_runs(prune=False)
+    assert run0 not in runs
+    assert run1 in runs
+
+
+def test_clear_refuses_live_pid(api, monkeypatch):
+    client, _, panel = api
+    _write_runs(panel, {
+        "20260613_101502_w0": {
+            "url": "https://jobs.test/strong",
+            "company": "Alpha Co",
+            "model": "sonnet",
+            "pid": 321,
+            "worker_slot": 0,
+            "log": "",
+            "started": "20260613_101502",
+        }
+    })
+    monkeypatch.setattr(panel, "_pid_alive", lambda pid: True)
+
+    response = client.post("/api/run/clear", json={"run_id": "20260613_101502_w0"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "run is still active"
+
+
+def test_legacy_run_alias_returns_first_alive_run(api, monkeypatch):
+    client, app_dir, panel = api
+    log = app_dir / "logs" / "run.log"
+    log.parent.mkdir(exist_ok=True)
+    log.write_text("NEEDHUMAN pinged you\n")
+    _write_runs(panel, {
+        "20260613_101502_w0": {
+            "url": "https://jobs.test/strong",
+            "company": "Alpha Co",
+            "model": "sonnet",
+            "pid": 321,
+            "worker_slot": 0,
+            "log": str(log),
+            "started": "20260613_101502",
+        }
+    })
+    monkeypatch.setattr(panel, "_pid_alive", lambda pid: True)
+
     data = client.get("/api/run").json()
-    assert data["active"] is False
-    assert client.post("/api/run/stop").json()["stopped"]
+    assert data["active"] is True
+    assert data["run_id"] == "20260613_101502_w0"
+    assert data["needs_you"] is True
+
+
+def test_run_registry_pruning_honors_grace_period(api, monkeypatch):
+    _, _, panel = api
+    _write_runs(panel, {
+        "old": {"pid": 1, "started": "20260613_100502", "worker_slot": 0},
+        "recent": {"pid": 2, "started": "20260613_100602", "worker_slot": 1},
+        "live": {"pid": 3, "started": "20260613_090000", "worker_slot": 2},
+    })
+    monkeypatch.setattr(panel, "_pid_alive", lambda pid: int(pid) == 3)
+
+    runs = panel.load_runs(now=datetime(2026, 6, 13, 10, 15, 2))
+    assert set(runs) == {"recent", "live"}
+
+
+def test_pdf_endpoints_support_inline_and_attachment(api):
+    client, app_dir, _ = api
+    (app_dir / "master_resume.pdf").write_bytes(b"%PDF-1.4\nmaster\n")
+
+    resume_attachment = client.get(
+        "/api/files/resume", params={"url": "https://jobs.test/strong"}
+    )
+    assert resume_attachment.status_code == 200
+    assert resume_attachment.headers["content-disposition"].startswith("attachment")
+
+    resume_inline = client.get(
+        "/api/files/resume", params={"url": "https://jobs.test/strong", "inline": "1"}
+    )
+    cover_inline = client.get(
+        "/api/files/cover", params={"url": "https://jobs.test/strong", "inline": "1"}
+    )
+    master_inline = client.get("/api/files/master", params={"inline": "1"})
+    assert resume_inline.headers["content-disposition"].startswith("inline")
+    assert cover_inline.headers["content-disposition"].startswith("inline")
+    assert master_inline.headers["content-disposition"].startswith("inline")
+
+
+def test_resume_library_lists_kinds_and_master_matches(api):
+    client, app_dir, _ = api
+    resumes = app_dir / "resumes"
+    resumes.mkdir()
+    (resumes / "library.pdf").write_bytes(b"%PDF-1.4\nsame\n")
+    (app_dir / "resume.pdf").write_bytes(b"%PDF-1.4\nbase\n")
+    (app_dir / "master_resume.pdf").write_bytes(b"%PDF-1.4\nsame\n")
+
+    data = client.get("/api/resumes").json()
+    assert data["master_exists"] is True
+    by_id = {item["id"]: item for item in data["items"]}
+    assert by_id["lib:library.pdf"]["kind"] == "library"
+    assert by_id["base:resume.pdf"]["kind"] == "base"
+    assert by_id["master:master_resume.pdf"]["kind"] == "master"
+    assert by_id["lib:library.pdf"]["is_master"] is True
+    assert by_id["master:master_resume.pdf"]["is_master"] is True
+
+
+def test_resume_id_path_traversal_is_rejected(api):
+    client, app_dir, _ = api
+    (app_dir / ".env").write_text("SECRET=do-not-return\n")
+
+    for item_id in ("lib:../.env", "lib:..%2F.env"):
+        response = client.get("/api/resumes/file", params={"id": item_id, "inline": "1"})
+        assert response.status_code in (400, 404)
+        assert b"do-not-return" not in response.content
+
+
+def test_resume_upload_validation_and_dedupe(api):
+    client, _, _ = api
+
+    bad_ext = client.post(
+        "/api/resumes/upload",
+        files={"file": ("resume.txt", b"%PDF-1.4\n", "application/pdf")},
+    )
+    assert bad_ext.status_code == 400
+
+    bad_magic = client.post(
+        "/api/resumes/upload",
+        files={"file": ("resume.pdf", b"not a pdf", "application/pdf")},
+    )
+    assert bad_magic.status_code == 400
+
+    too_big = client.post(
+        "/api/resumes/upload",
+        files={"file": ("resume.pdf", b"%PDF-" + b"x" * (15 * 1024 * 1024), "application/pdf")},
+    )
+    assert too_big.status_code == 400
+
+    first = client.post(
+        "/api/resumes/upload",
+        files={"file": ("My Resume!.pdf", b"%PDF-1.4\none\n", "application/pdf")},
+    )
+    second = client.post(
+        "/api/resumes/upload",
+        files={"file": ("My Resume!.pdf", b"%PDF-1.4\ntwo\n", "application/pdf")},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["name"] == "My_Resume.pdf"
+    assert second.json()["name"] == "My_Resume-1.pdf"
+
+
+def test_resume_select_copies_pdf_and_writes_extracted_text(api):
+    client, app_dir, _ = api
+    resumes = app_dir / "resumes"
+    resumes.mkdir()
+    pdf = resumes / "text.pdf"
+
+    from pypdf import PdfWriter
+    from pypdf._page import PageObject
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    page = PageObject.create_blank_page(width=200, height=200)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 72 120 Td (Hello ApplyPilot) Tj ET")
+    page[NameObject("/Contents")] = stream
+    writer.add_page(page)
+    with pdf.open("wb") as fh:
+        writer.write(fh)
+
+    data = client.post("/api/resumes/select", json={"id": "lib:text.pdf"}).json()
+    assert (app_dir / "master_resume.pdf").read_bytes() == pdf.read_bytes()
+    assert "Hello ApplyPilot" in (app_dir / "master_resume.txt").read_text()
+    assert data["master_exists"] is True
 
 
 def test_settings_do_not_return_secrets_and_put_round_trips(api):
@@ -295,25 +556,94 @@ def test_settings_do_not_return_secrets_and_put_round_trips(api):
             "TELEGRAM_CHAT_ID=123456",
             "LLM_MODEL=gpt-4o-mini",
             "APPLYPILOT_SUPERVISED=1",
+            "APPLYPILOT_NTFY_TOPIC=secret-topic",
+            "APPLYPILOT_WEBHOOK_URL=https://hooks.example/secret-generic",
+            "DISCORD_WEBHOOK_URL=https://discord.example/secret-discord",
+            "SLACK_WEBHOOK_URL=https://slack.example/secret-slack",
         ]) + "\n"
     )
 
     data = client.get("/api/settings").json()
     assert data["telegram_connected"] is True
+    assert data["ntfy_configured"] is True
+    assert data["webhook_configured"] is True
+    assert data["discord_configured"] is True
+    assert data["slack_configured"] is True
+    assert isinstance(data["platform_darwin"], bool)
+    assert data["macos_banner"] is True
     assert data["llm_model"] == "gpt-4o-mini"
     payload = json.dumps(data)
-    assert "secret-token" not in payload
-    assert "123456" not in payload
+    for secret in [
+        "secret-token",
+        "123456",
+        "secret-topic",
+        "secret-generic",
+        "secret-discord",
+        "secret-slack",
+        "hooks.example",
+        "discord.example",
+        "slack.example",
+    ]:
+        assert secret not in payload
 
     response = client.put(
         "/api/settings",
-        json={"supervised": False, "salary_mode": "fixed", "salary_fixed": "150000"},
+        json={
+            "supervised": False,
+            "salary_mode": "fixed",
+            "salary_fixed": "150000",
+            "ntfy_topic": "new-topic_1",
+            "webhook_url": "https://hooks.example/new",
+            "discord_webhook_url": "https://discord.example/new",
+            "slack_webhook_url": "https://slack.example/new",
+            "macos_banner": False,
+        },
     )
     assert response.status_code == 200
     text = (app_dir / ".env").read_text()
     assert "APPLYPILOT_SUPERVISED=0" in text
     assert "APPLYPILOT_SALARY_MODE=fixed" in text
     assert "APPLYPILOT_SALARY_FIXED=150000" in text
+    assert "APPLYPILOT_NTFY_TOPIC=new-topic_1" in text
+    assert "APPLYPILOT_WEBHOOK_URL=https://hooks.example/new" in text
+    assert "DISCORD_WEBHOOK_URL=https://discord.example/new" in text
+    assert "SLACK_WEBHOOK_URL=https://slack.example/new" in text
+    assert "APPLYPILOT_MACOS_BANNER=0" in text
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "ntfy_topic": "",
+            "webhook_url": "",
+            "discord_webhook_url": "",
+            "slack_webhook_url": "",
+        },
+    )
+    assert response.status_code == 200
+    text = (app_dir / ".env").read_text()
+    assert "APPLYPILOT_NTFY_TOPIC=" not in text
+    assert "APPLYPILOT_WEBHOOK_URL=" not in text
+    assert "DISCORD_WEBHOOK_URL=" not in text
+    assert "SLACK_WEBHOOK_URL=" not in text
+    data = response.json()
+    assert data["ntfy_configured"] is False
+    assert data["webhook_configured"] is False
+    assert data["discord_configured"] is False
+    assert data["slack_configured"] is False
+    assert data["macos_banner"] is False
+
+
+@pytest.mark.parametrize("field", ["webhook_url", "discord_webhook_url", "slack_webhook_url"])
+def test_settings_reject_invalid_notification_urls(api, field):
+    client, _, _ = api
+    response = client.put("/api/settings", json={field: "http://hooks.example/not-secure"})
+    assert response.status_code == 422
+
+
+def test_settings_reject_invalid_ntfy_topic(api):
+    client, _, _ = api
+    response = client.put("/api/settings", json={"ntfy_topic": "bad topic!"})
+    assert response.status_code == 422
 
 
 def test_answers_empty_question_is_400(api):
@@ -328,8 +658,8 @@ def test_handoffs_returns_exact_handoff_rows(api):
     assert [j["url"] for j in data["jobs"]] == ["https://jobs.test/handoff"]
 
 
-def test_sse_without_active_file_closes_promptly(api):
+def test_sse_unknown_run_closes_promptly(api):
     client, _, _ = api
-    with client.stream("GET", "/api/run/log/stream") as response:
+    with client.stream("GET", "/api/run/log/stream", params={"run_id": "missing"}) as response:
         assert response.status_code == 200
         assert list(response.iter_text()) == []

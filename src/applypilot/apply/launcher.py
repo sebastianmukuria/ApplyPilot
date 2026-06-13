@@ -26,6 +26,11 @@ from rich.table import Table
 
 from applypilot import config
 from applypilot.database import get_connection
+from applypilot.notify import (
+    last_needs_human_sent_at,
+    needs_human_sent_recently,
+    notify,
+)
 from applypilot.apply import chrome, dashboard, prompt as prompt_mod
 from applypilot.apply.chrome import (
     launch_chrome, cleanup_worker, kill_all_chrome,
@@ -93,43 +98,43 @@ def _make_mcp_config(cdp_port: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Human-in-the-loop notifications
+# Notifications
 # ---------------------------------------------------------------------------
 
-_last_notify: dict[int, float] = {}  # worker_id -> last ping time (throttle)
-
-
 def _notify_human(worker_id: int, reason: str) -> None:
-    """Ping the user (Telegram + local sound) when an application needs them.
+    """Notify the user when the agent emits a ``NEEDHUMAN:`` line."""
+    before = last_needs_human_sent_at(worker_id)
+    notify("needs_human", reason, worker_id=worker_id)
+    after = last_needs_human_sent_at(worker_id)
+    if after is not None and after != before:
+        add_event(f"[W{worker_id}] 🔔 pinged you: {reason[:30]}")
 
-    Fired when the agent emits a ``NEEDHUMAN:`` line (CAPTCHA or submit review).
-    Throttled to at most one ping per worker per 40s to avoid spam from the
-    agent's wait loop.
-    """
-    now = time.time()
-    if now - _last_notify.get(worker_id, 0) < 40:
-        return
-    _last_notify[worker_id] = now
-    text = f"🔔 ApplyPilot needs you: {reason}"[:300]
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if token and chat:
-        try:
-            import httpx
-            httpx.get(f"https://api.telegram.org/bot{token}/sendMessage",
-                      params={"chat_id": chat, "text": text}, timeout=10)
-        except Exception:
-            logger.debug("Telegram ping failed", exc_info=True)
+def _job_company(job: dict) -> str:
+    return job.get("company") or job.get("site") or "the company"
 
-    # Local sound backup (macOS).
-    try:
-        if platform.system() == "Darwin":
-            subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-    add_event(f"[W{worker_id}] 🔔 pinged you: {reason[:30]}")
+
+def _notify_run_failed(job: dict, reason: str, worker_id: int) -> None:
+    title = job.get("title") or "Application"
+    notify("run_failed", f"{title} at {_job_company(job)} failed: {reason}", worker_id=worker_id)
+
+
+def _notify_handoff_finished(job: dict, worker_id: int) -> None:
+    if not needs_human_sent_recently(worker_id, within=60):
+        notify(
+            "run_finished",
+            f"{_job_company(job)} is filled and waiting for your review",
+            worker_id=worker_id,
+        )
+
+
+def _notify_applied(job: dict, worker_id: int) -> None:
+    notify("run_finished", f"Applied to {_job_company(job)}", worker_id=worker_id)
+
+
+def _notify_batch_done(applied: int, failed: int) -> None:
+    if applied + failed > 1:
+        notify("batch_done", f"Batch done: {applied} applied, {failed} failed")
 
 
 # ---------------------------------------------------------------------------
@@ -1118,6 +1123,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                     relaunch_before_next = False
                     mark_result(job["url"], "handoff")
                     add_event(f"[W{worker_id}] Handed off -- browser left open for you: {job['title'][:30]}")
+                    _notify_handoff_finished(job, worker_id)
                 elif result == "applied" and dry_run:
                     # Agent ignored the dry-run instruction and claimed APPLIED.
                     # Do NOT mark applied -- release and warn.
@@ -1126,6 +1132,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                     add_event(f"[W{worker_id}] Dry-run: ignored stray APPLIED")
                 elif result == "applied":
                     mark_result(job["url"], "applied", duration_ms=duration_ms)
+                    _notify_applied(job, worker_id)
                     applied += 1
                     update_state(worker_id, jobs_applied=applied,
                                  jobs_done=applied + failed)
@@ -1134,6 +1141,7 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
                     mark_result(job["url"], "failed", reason,
                                 permanent=_is_permanent_failure(result),
                                 duration_ms=duration_ms)
+                    _notify_run_failed(job, reason, worker_id)
                     failed += 1
                     update_state(worker_id, jobs_failed=failed,
                                  jobs_done=applied + failed)
@@ -1176,7 +1184,8 @@ def worker_loop(worker_id: int = 0, limit: int = 1,
 def main(limit: int = 1, target_url: str | None = None,
          min_score: int = 7, headless: bool = False, model: str = "sonnet",
          dry_run: bool = False, continuous: bool = False,
-         poll_interval: int = 60, workers: int = 1) -> None:
+         poll_interval: int = 60, workers: int = 1,
+         worker_slot: int = 0) -> None:
     """Launch the apply pipeline.
 
     Args:
@@ -1189,6 +1198,7 @@ def main(limit: int = 1, target_url: str | None = None,
         continuous: Run forever, polling for new jobs.
         poll_interval: Seconds between DB polls when queue is empty.
         workers: Number of parallel workers (default 1).
+        worker_slot: Worker slot to use for a single target URL.
     """
     global POLL_INTERVAL
     POLL_INTERVAL = poll_interval
@@ -1209,9 +1219,14 @@ def main(limit: int = 1, target_url: str | None = None,
         effective_limit = limit
         mode_label = f"{limit} jobs"
 
+    single_worker_id = worker_slot if target_url and workers == 1 else 0
+
     # Initialize dashboard for all workers
-    for i in range(workers):
-        init_worker(i)
+    if workers == 1:
+        init_worker(single_worker_id)
+    else:
+        for i in range(workers):
+            init_worker(i)
 
     worker_label = f"{workers} worker{'s' if workers > 1 else ''}"
     console.print(f"Launching apply pipeline ({mode_label}, {worker_label}, poll every {POLL_INTERVAL}s)...")
@@ -1258,7 +1273,7 @@ def main(limit: int = 1, target_url: str | None = None,
             if workers == 1:
                 # Single worker — run directly in main thread
                 total_applied, total_failed = worker_loop(
-                    worker_id=0,
+                    worker_id=single_worker_id,
                     limit=effective_limit,
                     target_url=target_url,
                     min_score=min_score,
@@ -1313,6 +1328,7 @@ def main(limit: int = 1, target_url: str | None = None,
             f"\n[bold]Done: {total_applied} applied, {total_failed} failed "
             f"(${totals['cost']:.3f})[/bold]"
         )
+        _notify_batch_done(total_applied, total_failed)
         console.print(f"Logs: {config.LOG_DIR}")
 
     except KeyboardInterrupt:

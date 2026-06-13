@@ -1,7 +1,7 @@
 // Floating glass island: wordmark, section tabs, run LED, settings.
 import { motion } from 'motion/react'
 import { PaperPlaneTilt, GearSix } from '@phosphor-icons/react'
-import type { RunStatus } from '../lib/api'
+import type { RunsResponse } from '../lib/api'
 import { DECK } from '../lib/motion'
 
 export type View = 'deck' | 'queue' | 'intel' | 'answers'
@@ -16,23 +16,27 @@ const TABS: { id: View; label: string }[] = [
 export function CommandBar({
   view,
   onView,
-  run,
+  runs,
   onLogoTap,
   onSettings,
 }: {
   view: View
   onView: (v: View) => void
-  run: RunStatus | null
+  runs: RunsResponse | null
   onLogoTap: () => void
   onSettings: () => void
 }) {
-  const led = run?.active
-    ? run.needs_you
-      ? 'bg-clay shadow-[0_0_12px_2px_rgba(217,119,87,0.6)] animate-pulse'
-      : run.done
+  const list = runs?.runs ?? []
+  const needsYou = list.some((r) => r.needs_you)
+  const inFlight = list.some((r) => r.alive)
+  const allDone = list.length > 0 && list.every((r) => r.done)
+  const led = needsYou
+    ? 'bg-clay shadow-[0_0_12px_2px_rgba(217,119,87,0.6)] animate-pulse'
+    : inFlight
+      ? 'bg-sky shadow-[0_0_10px_1px_rgba(122,167,217,0.5)] animate-pulse'
+      : allDone
         ? 'bg-sage shadow-[0_0_10px_1px_rgba(127,176,105,0.5)]'
-        : 'bg-sky shadow-[0_0_10px_1px_rgba(122,167,217,0.5)] animate-pulse'
-    : 'bg-white/20'
+        : 'bg-white/20'
 
   return (
     <motion.header
@@ -84,7 +88,7 @@ export function CommandBar({
 
         <div className="flex items-center gap-1 pl-1 pr-1.5">
           <span className={`h-2 w-2 rounded-full transition-colors duration-500 ${led}`} title={
-            run?.active ? (run.needs_you ? 'Needs you' : run.done ? 'Run finished' : 'Run in flight') : 'Idle'
+            needsYou ? 'A run needs you' : inFlight ? `${list.filter((r) => r.alive).length} in flight` : allDone ? 'Runs finished' : 'Idle'
           } />
           <button
             onClick={onSettings}

@@ -224,6 +224,19 @@ To get a phone notification when a run needs you:
    TELEGRAM_CHAT_ID=123456789
    ```
 
+### More alert channels (all optional, all in the app's Settings sheet)
+
+| Channel | Setup |
+|---|---|
+| Browser + chime | Toggle in Settings — one permission prompt, no config. |
+| macOS banners | On by default on Macs (`APPLYPILOT_MACOS_BANNER=0` to disable). |
+| [ntfy](https://ntfy.sh) phone push | Install the free ntfy app, subscribe to a random topic (e.g. `applypilot-x7k2`), paste the topic in Settings. No account needed. |
+| Discord / Slack | Paste an incoming-webhook URL in Settings. |
+| Custom webhook | Any HTTPS endpoint — receives `{event, reason, ts}` JSON (Zapier, Home Assistant, …). |
+
+Pings fire when a run needs you (CAPTCHA / review), when a run fails or
+finishes, and at the end of a batch.
+
 ## Running at volume (100+/day)
 
 The agent's fixed overhead is engineered down (pinned MCP server, Chrome

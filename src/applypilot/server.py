@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import platform
 import re
+import shutil
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -31,11 +35,24 @@ class RunBody(BaseModel):
     supervised: bool | None = None
 
 
+class RunIdBody(BaseModel):
+    run_id: str
+
+
+class ResumeSelectBody(BaseModel):
+    id: str
+
+
 class SettingsUpdate(BaseModel):
     supervised: bool | None = None
     fixed_resume: bool | None = None
     salary_mode: str | None = None
     salary_fixed: str | None = None
+    ntfy_topic: str | None = None
+    webhook_url: str | None = None
+    discord_webhook_url: str | None = None
+    slack_webhook_url: str | None = None
+    macos_banner: bool | None = None
 
 
 class WorkContextBody(BaseModel):
@@ -139,12 +156,58 @@ def create_app() -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/files/resume")
-    def resume_file(url: str):
-        return _pdf_response(url, "tailored_resume_path", "resume")
+    def resume_file(url: str, inline: bool = False):
+        return _pdf_response(url, "tailored_resume_path", "resume", inline=inline)
 
     @app.get("/api/files/cover")
-    def cover_file(url: str):
-        return _pdf_response(url, "cover_letter_path", "cover")
+    def cover_file(url: str, inline: bool = False):
+        return _pdf_response(url, "cover_letter_path", "cover", inline=inline)
+
+    @app.get("/api/files/master")
+    def master_file(inline: bool = False):
+        pdf = panel.paths()["APP"] / "master_resume.pdf"
+        if not pdf.exists():
+            raise HTTPException(status_code=404, detail="master resume not found")
+        return _file_response(pdf, "master_resume.pdf", inline=inline)
+
+    @app.get("/api/resumes")
+    def resumes():
+        return _resumes_payload()
+
+    @app.get("/api/resumes/file")
+    def resume_library_file(id: str, inline: bool = False):
+        path = _resolve_resume_id(id)
+        return _file_response(path, path.name, inline=inline)
+
+    @app.post("/api/resumes/upload")
+    async def upload_resume(file: UploadFile = File(...)):
+        data = await file.read()
+        if not (file.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="file must be a PDF")
+        if len(data) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="file is too large")
+        if not data.startswith(b"%PDF-"):
+            raise HTTPException(status_code=400, detail="file is not a valid PDF")
+        path = _dedupe_resume_name(_sanitize_pdf_name(file.filename or "resume.pdf"))
+        path.write_bytes(data)
+        try:
+            os.chmod(path, 0o644)
+        except OSError:
+            pass
+        return _resume_item(f"lib:{path.name}", path, "library")
+
+    @app.post("/api/resumes/select")
+    def select_resume(body: ResumeSelectBody):
+        src = _resolve_resume_id(body.id)
+        app_dir = panel.paths()["APP"]
+        dst = app_dir / "master_resume.pdf"
+        shutil.copyfile(src, dst)
+        try:
+            os.chmod(dst, 0o644)
+        except OSError:
+            pass
+        _regenerate_master_text(dst)
+        return _resumes_payload()
 
     @app.get("/api/stats")
     def stats():
@@ -173,44 +236,69 @@ def create_app() -> FastAPI:
             "spend": panel.llm_spend(),
         }
 
-    @app.get("/api/run")
-    def run_status():
-        return _run_payload()
+    @app.get("/api/runs")
+    def runs_status():
+        return _runs_payload()
 
     @app.post("/api/run")
     def start_run(body: RunBody):
-        active_file = panel.paths()["ACTIVE_FILE"]
-        active = _read_active()
-        if active and _pid_alive(active.get("pid")):
-            raise HTTPException(status_code=409, detail="run already active")
         row = _get_job(body.url)
         if row is None:
             raise HTTPException(status_code=404, detail="job not found")
+        for run in panel.load_runs().values():
+            if run.get("url") == body.url and panel._pid_alive(run.get("pid")):
+                raise HTTPException(status_code=409, detail="job already running")
+        slot = panel.alloc_slot(panel.max_gui_runs())
+        if slot is None:
+            raise HTTPException(status_code=409, detail="no free slot")
         if body.supervised is not None:
             panel.write_env({"APPLYPILOT_SUPERVISED": "1" if body.supervised else "0"})
-        active_file.unlink(missing_ok=True)
-        panel.launch_apply(body.url, row["company"] or "job", body.model)
-        return _run_payload()
+        run_id = panel.launch_apply_slot(body.url, row["company"] or "job", body.model, slot)
+        return _run_payload(run_id)
 
     @app.post("/api/run/stop")
-    def stop_run():
-        return {"stopped": panel.stop_run()}
+    def stop_run(body: RunIdBody):
+        if body.run_id not in panel.load_runs(prune=False):
+            raise HTTPException(status_code=404, detail="run not found")
+        return {"stopped": panel.stop_run_id(body.run_id)}
+
+    @app.post("/api/run/stop-all")
+    def stop_all_runs():
+        stopped = panel.stop_run()
+        panel.paths()["RUNS_FILE"].unlink(missing_ok=True)
+        return {"stopped": stopped}
 
     @app.post("/api/run/clear")
-    def clear_run():
-        panel.paths()["ACTIVE_FILE"].unlink(missing_ok=True)
+    def clear_run(body: RunIdBody):
+        runs = panel.load_runs(prune=False)
+        run = runs.get(body.run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="run not found")
+        if panel._pid_alive(run.get("pid")):
+            raise HTTPException(status_code=409, detail="run is still active")
+        runs.pop(body.run_id, None)
+        panel._save_runs(runs)
         return {"ok": True}
 
     @app.get("/api/run/log")
-    def run_log():
-        active = _read_active()
-        if not active:
-            raise HTTPException(status_code=404, detail="no active run")
-        return {"lines": panel.tail(active.get("log"), 200)}
+    def run_log(run_id: str):
+        run = panel.load_runs(prune=False).get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="run not found")
+        return {"lines": panel.tail(run.get("log"), 200)}
 
     @app.get("/api/run/log/stream")
-    def run_log_stream():
-        return StreamingResponse(_log_stream(), media_type="text/event-stream")
+    def run_log_stream(run_id: str):
+        return StreamingResponse(_log_stream(run_id), media_type="text/event-stream")
+
+    @app.get("/api/run")
+    def run_status():
+        for run_id, run in panel.load_runs().items():
+            if panel._pid_alive(run.get("pid")):
+                payload = _run_payload(run_id)
+                payload["active"] = True
+                return payload
+        return {"active": False}
 
     @app.get("/api/settings")
     def settings():
@@ -227,6 +315,16 @@ def create_app() -> FastAPI:
             updates["APPLYPILOT_SALARY_MODE"] = body.salary_mode
         if body.salary_fixed is not None:
             updates["APPLYPILOT_SALARY_FIXED"] = body.salary_fixed.strip()
+        if body.ntfy_topic is not None:
+            updates["APPLYPILOT_NTFY_TOPIC"] = _settings_topic_value(body.ntfy_topic)
+        if body.webhook_url is not None:
+            updates["APPLYPILOT_WEBHOOK_URL"] = _settings_https_url_value(body.webhook_url)
+        if body.discord_webhook_url is not None:
+            updates["DISCORD_WEBHOOK_URL"] = _settings_https_url_value(body.discord_webhook_url)
+        if body.slack_webhook_url is not None:
+            updates["SLACK_WEBHOOK_URL"] = _settings_https_url_value(body.slack_webhook_url)
+        if body.macos_banner is not None:
+            updates["APPLYPILOT_MACOS_BANNER"] = "1" if body.macos_banner else "0"
         if updates:
             panel.write_env(updates)
         return _settings_payload()
@@ -377,18 +475,146 @@ def _job_shape(row: dict, hidden_urls: set | None = None) -> dict:
     }
 
 
-def _pdf_response(url: str, path_field: str, kind: str) -> FileResponse:
+def _pdf_response(url: str, path_field: str, kind: str, inline: bool = False) -> FileResponse:
     row = _get_job(url)
     if row is None or not row[path_field]:
         raise HTTPException(status_code=404, detail=f"{kind} not found")
     pdf = Path(row[path_field]).with_suffix(".pdf")
     if not pdf.exists():
         raise HTTPException(status_code=404, detail=f"{kind} not found")
+    return _file_response(pdf, _clean_filename(row, kind), inline=inline)
+
+
+def _file_response(path: Path, filename: str, inline: bool = False) -> FileResponse:
     return FileResponse(
-        pdf,
+        path,
         media_type="application/pdf",
-        filename=_clean_filename(row, kind),
+        filename=filename,
+        content_disposition_type="inline" if inline else "attachment",
     )
+
+
+def _resumes_dir() -> Path:
+    d = panel.paths()["APP"] / "resumes"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _resumes_payload() -> dict:
+    app_dir = panel.paths()["APP"]
+    master = app_dir / "master_resume.pdf"
+    items = []
+    for path in sorted(_resumes_dir().glob("*.pdf"), key=lambda p: p.name.lower()):
+        if path.is_file():
+            items.append(_resume_item(f"lib:{path.name}", path, "library", master=master))
+    base = app_dir / "resume.pdf"
+    if base.exists():
+        items.append(_resume_item("base:resume.pdf", base, "base", master=master))
+    if master.exists():
+        items.append(_resume_item("master:master_resume.pdf", master, "master", master=master))
+    return {"master_exists": master.exists(), "items": items}
+
+
+def _resume_item(item_id: str, path: Path, kind: str, master: Path | None = None) -> dict:
+    st = path.stat()
+    master = master if master is not None else panel.paths()["APP"] / "master_resume.pdf"
+    return {
+        "id": item_id,
+        "name": path.name,
+        "kind": kind,
+        "size": st.st_size,
+        "mtime": st.st_mtime,
+        "is_master": _same_file(path, master) if master.exists() else False,
+    }
+
+
+def _same_file(path: Path, master: Path) -> bool:
+    try:
+        if path.resolve() == master.resolve():
+            return True
+        if path.stat().st_size != master.stat().st_size:
+            return False
+        return _sha256(path) == _sha256(master)
+    except OSError:
+        return False
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _resolve_resume_id(item_id: str) -> Path:
+    token = unquote(item_id or "")
+    if ":" not in token:
+        raise HTTPException(status_code=400, detail="invalid resume id")
+    kind, name = token.split(":", 1)
+    app_dir = panel.paths()["APP"]
+    if kind == "lib":
+        if not name.lower().endswith(".pdf") or _unsafe_filename(name):
+            raise HTTPException(status_code=400, detail="invalid resume id")
+        root = _resumes_dir().resolve()
+        path = (root / name).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid resume id") from e
+    elif kind == "base" and name == "resume.pdf":
+        root = app_dir.resolve()
+        path = (root / "resume.pdf").resolve()
+    elif kind == "master" and name == "master_resume.pdf":
+        root = app_dir.resolve()
+        path = (root / "master_resume.pdf").resolve()
+    else:
+        raise HTTPException(status_code=400, detail="invalid resume id")
+    try:
+        path.relative_to(root)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid resume id") from e
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="resume not found")
+    return path
+
+
+def _unsafe_filename(name: str) -> bool:
+    return "/" in name or "\\" in name or ".." in name
+
+
+def _sanitize_pdf_name(filename: str) -> str:
+    name = Path(filename).name
+    stem = name[:-4] if name.lower().endswith(".pdf") else name
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-")
+    return f"{(stem or 'resume')[:120]}.pdf"
+
+
+def _dedupe_resume_name(filename: str) -> Path:
+    root = _resumes_dir()
+    stem = filename[:-4]
+    candidate = root / filename
+    n = 1
+    while candidate.exists():
+        candidate = root / f"{stem}-{n}.pdf"
+        n += 1
+    return candidate
+
+
+def _regenerate_master_text(pdf: Path) -> None:
+    app_dir = panel.paths()["APP"]
+    txt = app_dir / "master_resume.txt"
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(pdf))
+        text = "\n".join((page.extract_text() or "") for page in reader.pages)
+        txt.write_text(text)
+    except Exception:
+        if txt.exists():
+            return
+        fallback = app_dir / "resume.txt"
+        txt.write_text(fallback.read_text(errors="ignore") if fallback.exists() else "")
 
 
 def _clean_filename(row: dict, kind: str) -> str:
@@ -418,70 +644,58 @@ def _status_label(status: str | None) -> str:
     return status
 
 
-def _read_active() -> dict | None:
-    active_file = panel.paths()["ACTIVE_FILE"]
-    if not active_file.exists():
-        return None
-    try:
-        return json.loads(active_file.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _run_payload() -> dict:
-    active = _read_active()
-    payload = {
-        "active": False,
-        "company": None,
-        "url": None,
-        "model": None,
-        "started": None,
-        "pid": None,
-        "needs_you": False,
-        "done": False,
-        "status": None,
+def _runs_payload() -> dict:
+    max_slots = panel.max_gui_runs()
+    runs = panel.load_runs()
+    live_slots = {
+        int(run.get("worker_slot", 0))
+        for run in runs.values()
+        if panel._pid_alive(run.get("pid"))
     }
-    if not active:
-        return payload
+    return {
+        "slots": max_slots,
+        "free": max_slots - len(live_slots),
+        "runs": [
+            _run_payload(run_id, run)
+            for run_id, run in sorted(runs.items(), key=lambda item: item[1].get("started", ""))
+        ],
+    }
 
-    log_text = panel.tail(active.get("log"))
-    done = "Done:" in log_text
-    needs_you = ("pinged you" in log_text or "NEEDHUMAN" in log_text) and not done
-    row = _get_job(active.get("url", ""))
-    payload.update({
-        "active": True,
-        "company": active.get("company"),
-        "url": active.get("url"),
-        "model": active.get("model"),
-        "started": active.get("started"),
-        "pid": active.get("pid"),
+
+def _run_payload(run_id: str, run: dict | None = None) -> dict:
+    if run is None:
+        run = panel.load_runs(prune=False).get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    done, needs_you = _run_log_flags(run)
+    row = _get_job(run.get("url", ""))
+    return {
+        "run_id": run_id,
+        "url": run.get("url"),
+        "company": run.get("company"),
+        "model": run.get("model"),
+        "started": run.get("started"),
+        "worker_slot": int(run.get("worker_slot", 0)),
+        "alive": panel._pid_alive(run.get("pid")),
         "needs_you": needs_you,
         "done": done,
         "status": row["apply_status"] if row else None,
-    })
-    return payload
+    }
 
 
-def _pid_alive(pid) -> bool:
-    if not pid:
-        return False
-    try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-    return True
+def _run_log_flags(run: dict) -> tuple[bool, bool]:
+    log_text = panel.tail(run.get("log"))
+    done = "Done:" in log_text
+    needs_you = ("pinged you" in log_text or "NEEDHUMAN" in log_text) and not done
+    return done, needs_you
 
 
-async def _log_stream():
+async def _log_stream(run_id: str):
     offset = 0
-    active = _read_active()
-    if not active:
+    run = panel.load_runs(prune=False).get(run_id)
+    if not run:
         return
-    log_path = Path(active.get("log", ""))
+    log_path = Path(run.get("log", ""))
     try:
         offset = log_path.stat().st_size
     except OSError:
@@ -489,10 +703,11 @@ async def _log_stream():
 
     last_status = 0.0
     while True:
-        active = _read_active()
-        if not active:
+        run = panel.load_runs(prune=False).get(run_id)
+        if not run:
             return
-        log_path = Path(active.get("log", ""))
+        log_path = Path(run.get("log", ""))
+        wrote_lines = False
         try:
             size = log_path.stat().st_size
             if size < offset:
@@ -503,6 +718,7 @@ async def _log_stream():
                     chunk = fh.read()
                     offset = fh.tell()
                 for line in chunk.splitlines():
+                    wrote_lines = True
                     yield _sse("log", {"line": panel.redact_log_line(line)})
         except OSError:
             pass
@@ -510,7 +726,9 @@ async def _log_stream():
         now = time.monotonic()
         if now - last_status >= 3:
             last_status = now
-            yield _sse("status", _run_payload())
+            yield _sse("status", _run_payload(run_id, run))
+        if not wrote_lines and not panel._pid_alive(run.get("pid")):
+            return
         await asyncio.sleep(1)
 
 
@@ -521,6 +739,7 @@ def _sse(event: str, data: dict) -> str:
 def _settings_payload() -> dict:
     env = panel.read_env()
     app_dir = panel.paths()["APP"]
+    platform_darwin = platform.system() == "Darwin"
     return {
         "supervised": env.get("APPLYPILOT_SUPERVISED", "1") == "1",
         "fixed_resume": env.get("APPLYPILOT_FIXED_RESUME", "0") == "1",
@@ -528,8 +747,32 @@ def _settings_payload() -> dict:
         "salary_fixed": env.get("APPLYPILOT_SALARY_FIXED", ""),
         "llm_model": env.get("LLM_MODEL", ""),
         "telegram_connected": bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID")),
+        "ntfy_configured": bool(env.get("APPLYPILOT_NTFY_TOPIC")),
+        "webhook_configured": bool(env.get("APPLYPILOT_WEBHOOK_URL")),
+        "discord_configured": bool(env.get("DISCORD_WEBHOOK_URL")),
+        "slack_configured": bool(env.get("SLACK_WEBHOOK_URL")),
+        "platform_darwin": platform_darwin,
+        "macos_banner": env.get("APPLYPILOT_MACOS_BANNER", "1") != "0",
         "master_resume_exists": (app_dir / "master_resume.pdf").exists(),
     }
+
+
+def _settings_topic_value(value: str) -> str | None:
+    value = value.strip()
+    if value == "":
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
+        raise HTTPException(status_code=422, detail="ntfy topic must be 1-64 letters, numbers, underscores, or dashes")
+    return value
+
+
+def _settings_https_url_value(value: str) -> str | None:
+    value = value.strip()
+    if value == "":
+        return None
+    if not value.startswith("https://"):
+        raise HTTPException(status_code=422, detail="webhook URL must start with https://")
+    return value
 
 
 def _work_context_payload() -> dict:
