@@ -587,39 +587,31 @@ def _set_job_outcome(url: str, raw_outcome: str) -> dict:
                 "UPDATE jobs SET outcome=?, outcome_at=?, outcome_source='manual' WHERE url=?",
                 (outcome, now, url),
             )
-            event_type = outcome
-            subject = f"Manual outcome: {outcome}"
+            # One audit row per manual outcome — replace any prior manual row for
+            # this job so the signals feed never accumulates "responded then
+            # cleared then interview" churn for a single application.
+            conn.execute(
+                "DELETE FROM app_events WHERE job_url=? AND source='manual'", (url,))
+            conn.execute(
+                """
+                INSERT INTO app_events (
+                    message_id, thread_id, job_url, company, role, event_type, source,
+                    confidence, email_ts, subject, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (None, None, url, row.get("company"), row.get("title"), outcome,
+                 "manual", 1.0, now, f"Marked {outcome}", now),
+            )
             payload = {"outcome": outcome, "outcome_at": now, "outcome_source": "manual"}
         else:
             conn.execute(
                 "UPDATE jobs SET outcome=NULL, outcome_at=NULL, outcome_source=NULL WHERE url=?",
                 (url,),
             )
-            event_type = "cleared"
-            subject = "Manual outcome cleared"
+            # Clearing is not a signal — drop the job's manual audit row entirely.
+            conn.execute(
+                "DELETE FROM app_events WHERE job_url=? AND source='manual'", (url,))
             payload = {"outcome": None, "outcome_at": None, "outcome_source": None}
-
-        conn.execute(
-            """
-            INSERT INTO app_events (
-                message_id, thread_id, job_url, company, role, event_type, source,
-                confidence, email_ts, subject, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                None,
-                None,
-                url,
-                row.get("company"),
-                row.get("title"),
-                event_type,
-                "manual",
-                1.0,
-                now,
-                subject,
-                now,
-            ),
-        )
         conn.commit()
     finally:
         conn.close()
@@ -703,6 +695,10 @@ def _outcomes_summary() -> dict:
 
 
 def _outcome_events(limit: int) -> list[dict]:
+    # The feed surfaces only signals that tell you something NEW about an
+    # application: a response, screen, interview, offer, rejection, or recruiter
+    # reaching out. Application-received receipts ('applied'), non-job mail
+    # ('other'), and bare 'responded' acks are noise and are filtered out.
     rows = _fetch_rows(
         """
         SELECT
@@ -712,6 +708,7 @@ def _outcome_events(limit: int) -> list[dict]:
             j.company AS job_company, j.title AS job_title
         FROM app_events e
         LEFT JOIN jobs j ON e.job_url = j.url
+        WHERE e.event_type NOT IN ('applied', 'other', 'cleared', 'responded')
         ORDER BY COALESCE(e.created_at, '') DESC, e.id DESC
         LIMIT ?
         """,

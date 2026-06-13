@@ -88,12 +88,14 @@ export function OutcomesSection() {
 
       <Bezel className="lg:col-span-5" i={5}>
         <div className="flex h-full flex-col p-6">
-          <Eyebrow>Latest signals</Eyebrow>
+          <Eyebrow>Responses &amp; interviews</Eyebrow>
           {events.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center">
               <EnvelopeOpen weight="thin" size={36} className="text-faint" />
-              <p className="max-w-60 text-[12.5px] italic leading-relaxed text-faint">
-                No signals yet — connect Gmail tracking in Settings and run the backfill.
+              <p className="max-w-64 text-[12.5px] italic leading-relaxed text-faint">
+                Real replies land here — interview invites, rejections, recruiter
+                outreach. Application receipts are filtered out. Connect Gmail in
+                Settings to populate it automatically.
               </p>
             </div>
           ) : (

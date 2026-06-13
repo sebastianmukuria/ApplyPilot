@@ -221,7 +221,7 @@ def test_outcome_events_ordering_and_job_join(api):
             None,
             "External Co",
             "External Role",
-            "responded",
+            "recruiter_inbound",
             "gmail",
             0.8,
             "2026-01-04T00:00:00",
@@ -269,3 +269,29 @@ def test_outcome_schema_migrates_old_database(tmp_path):
         "created_at",
     } <= event_cols
     db.close_connection(path)
+
+
+def test_signals_feed_excludes_receipts_and_manual_churn(api):
+    """The feed shows only meaningful signals; manual set/clear leaves at most
+    one row and never 'applied'/'responded'/'cleared' noise."""
+    client, _, _ = api
+    url = "https://jobs.test/score8-empty"
+
+    # manual 'responded' is a valid outcome but filtered from the feed as noise
+    client.post("/api/jobs/outcome", json={"url": url, "outcome": "responded"})
+    feed = client.get("/api/outcomes/events").json()
+    events = feed["events"] if isinstance(feed, dict) else feed
+    assert all(e["job_url"] != url for e in events)
+
+    # a meaningful manual outcome DOES surface, and replaces the prior row
+    client.post("/api/jobs/outcome", json={"url": url, "outcome": "interview"})
+    feed = client.get("/api/outcomes/events").json()
+    events = feed["events"] if isinstance(feed, dict) else feed
+    mine = [e for e in events if e["job_url"] == url]
+    assert len(mine) == 1 and mine[0]["event_type"] == "interview"
+
+    # clearing removes the manual row entirely
+    client.post("/api/jobs/outcome", json={"url": url, "outcome": ""})
+    feed = client.get("/api/outcomes/events").json()
+    events = feed["events"] if isinstance(feed, dict) else feed
+    assert all(e["job_url"] != url for e in events)
