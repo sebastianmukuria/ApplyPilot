@@ -169,8 +169,8 @@ function Switch({ on, set }: { on: boolean; set: (v: boolean) => void }) {
       className={`relative h-6 w-11 flex-none rounded-full transition-colors duration-300 ${on ? 'bg-clay' : 'bg-white/10'}`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-ink transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${
-          on ? 'translate-x-[22px]' : 'translate-x-0.5'
+        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-ink transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+          on ? 'translate-x-[20px]' : 'translate-x-0'
         }`}
       />
     </button>

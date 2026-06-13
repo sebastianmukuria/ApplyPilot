@@ -160,8 +160,8 @@ function Toggle({ label, on, set }: { label: string; on: boolean; set: (v: boole
         className={`relative h-5 w-9 rounded-full transition-colors duration-300 ${on ? 'bg-clay/80' : 'bg-white/10'}`}
       >
         <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-ink transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${
-            on ? 'translate-x-[18px]' : 'translate-x-0.5'
+          className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-ink transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+            on ? 'translate-x-[16px]' : 'translate-x-0'
           }`}
         />
       </span>
