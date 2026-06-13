@@ -154,8 +154,14 @@ def counts() -> dict:
 
 
 def llm_spend() -> dict:
-    """Aggregate llm_usage.jsonl into estimated cost (lifetime + today, by model)."""
-    out = {"cost": 0.0, "today": 0.0, "tok_in": 0, "tok_out": 0, "calls": 0, "by_model": {}}
+    """Aggregate llm_usage.jsonl into spend (lifetime + today, by model).
+
+    Two kinds of records: billable API calls (cost estimated from PRICES) and
+    kind="subscription" claude apply runs (explicit cost field, reported as
+    the subscription-covered equivalent — never added to billable cost).
+    """
+    out = {"cost": 0.0, "today": 0.0, "sub_cost": 0.0, "sub_today": 0.0,
+           "tok_in": 0, "tok_out": 0, "calls": 0, "by_model": {}}
     usage_file = _path("USAGE_FILE")
     if not usage_file.exists():
         return out
@@ -166,13 +172,18 @@ def llm_spend() -> dict:
         except json.JSONDecodeError:
             continue
         model = r.get("model", "?")
-        p_in, p_out = max(((k, v) for k, v in PRICES.items() if model.startswith(k)),
-                          key=lambda kv: len(kv[0]), default=("", DEFAULT_PRICE))[1]
-        cost = r.get("in", 0) / 1e6 * p_in + r.get("out", 0) / 1e6 * p_out
-        out["cost"] += cost
-        out["tok_in"] += r.get("in", 0); out["tok_out"] += r.get("out", 0); out["calls"] += 1
+        if "cost" in r:
+            cost = float(r.get("cost") or 0)
+        else:
+            p_in, p_out = max(((k, v) for k, v in PRICES.items() if model.startswith(k)),
+                              key=lambda kv: len(kv[0]), default=("", DEFAULT_PRICE))[1]
+            cost = r.get("in", 0) / 1e6 * p_in + r.get("out", 0) / 1e6 * p_out
+        is_sub = r.get("kind") == "subscription"
+        bucket, bucket_today = ("sub_cost", "sub_today") if is_sub else ("cost", "today")
+        out[bucket] += cost
         if r.get("ts", "").startswith(today):
-            out["today"] += cost
+            out[bucket_today] += cost
+        out["tok_in"] += r.get("in", 0); out["tok_out"] += r.get("out", 0); out["calls"] += 1
         m = out["by_model"].setdefault(model, {"cost": 0.0, "in": 0, "out": 0, "calls": 0})
         m["cost"] += cost; m["in"] += r.get("in", 0); m["out"] += r.get("out", 0); m["calls"] += 1
     return out

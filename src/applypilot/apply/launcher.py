@@ -912,6 +912,19 @@ def run_job(job: dict, port: int, worker_id: int = 0,
             ws = get_state(worker_id)
             prev_cost = ws.total_cost if ws else 0.0
             update_state(worker_id, total_cost=prev_cost + cost)
+            # Ledger: subscription-covered claude compute, shown separately
+            # from billable API spend in the GUI. Never let it break a run.
+            try:
+                rec = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "model": f"claude-{model} (apply)",
+                       "in": stats.get("input_tokens", 0),
+                       "out": stats.get("output_tokens", 0),
+                       "cost": round(float(cost or 0), 6),
+                       "kind": "subscription"}
+                with open(config.APP_DIR / "llm_usage.jsonl", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec) + "\n")
+            except Exception:
+                logger.debug("Could not record claude usage", exc_info=True)
 
         def _clean_reason(s: str) -> str:
             return re.sub(r'[*`"]+$', '', s).strip()

@@ -77,7 +77,9 @@ export function Deck({
               <div className="tnum mt-2 text-[12px] text-faint">
                 ${stats?.spend.today.toFixed(2) ?? '0.00'} today · {stats?.spend.calls.toLocaleString() ?? 0} calls
               </div>
-              <div className="mt-1 text-[11px] text-faint">Apply runs ride the Claude subscription — $0.</div>
+              <div className="tnum mt-1 text-[11px] text-faint">
+                + ${stats?.spend.sub_cost?.toFixed(2) ?? '0.00'} Claude compute — covered by subscription
+              </div>
             </div>
           </div>
         </Bezel>

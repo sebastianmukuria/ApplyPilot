@@ -48,6 +48,8 @@ export interface Stats {
   spend: {
     cost: number
     today: number
+    sub_cost: number
+    sub_today: number
     tok_in: number
     tok_out: number
     calls: number

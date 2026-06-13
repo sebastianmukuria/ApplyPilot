@@ -145,7 +145,8 @@ export function Intel({ stats }: { stats: Stats | null }) {
                 <Empty>Usage tracking starts with your next pipeline run.</Empty>
               )}
               <p className="pt-1 text-[11px] leading-relaxed text-faint">
-                Estimates from the PRICES table. Apply runs use the Claude subscription — no per-token cost.
+                Billable estimates from the PRICES table. Claude apply rows show the
+                API-equivalent value — covered by your subscription, $0 billed.
               </p>
             </div>
           </div>
