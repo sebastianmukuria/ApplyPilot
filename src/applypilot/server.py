@@ -53,6 +53,8 @@ class SettingsUpdate(BaseModel):
     discord_webhook_url: str | None = None
     slack_webhook_url: str | None = None
     macos_banner: bool | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
 
 class WorkContextBody(BaseModel):
@@ -325,6 +327,10 @@ def create_app() -> FastAPI:
             updates["SLACK_WEBHOOK_URL"] = _settings_https_url_value(body.slack_webhook_url)
         if body.macos_banner is not None:
             updates["APPLYPILOT_MACOS_BANNER"] = "1" if body.macos_banner else "0"
+        if body.telegram_bot_token is not None:
+            updates["TELEGRAM_BOT_TOKEN"] = _settings_telegram_token_value(body.telegram_bot_token)
+        if body.telegram_chat_id is not None:
+            updates["TELEGRAM_CHAT_ID"] = _settings_telegram_chat_value(body.telegram_chat_id)
         if updates:
             panel.write_env(updates)
         return _settings_payload()
@@ -763,6 +769,24 @@ def _settings_topic_value(value: str) -> str | None:
         return None
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
         raise HTTPException(status_code=422, detail="ntfy topic must be 1-64 letters, numbers, underscores, or dashes")
+    return value
+
+
+def _settings_telegram_token_value(value: str) -> str | None:
+    value = value.strip()
+    if value == "":
+        return None
+    if not re.fullmatch(r"\d+:[A-Za-z0-9_-]{20,}", value):
+        raise HTTPException(status_code=422, detail="that doesn't look like a Telegram bot token (digits:secret)")
+    return value
+
+
+def _settings_telegram_chat_value(value: str) -> str | None:
+    value = value.strip()
+    if value == "":
+        return None
+    if not re.fullmatch(r"-?\d{1,20}", value):
+        raise HTTPException(status_code=422, detail="Telegram chat id must be numeric")
     return value
 
 

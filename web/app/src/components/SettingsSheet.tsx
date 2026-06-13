@@ -163,13 +163,8 @@ export function SettingsSheet({
                     <ChannelFields s={s} onSaved={() => api.settings().then(setS).catch(() => {})} />
                   </div>
 
-                  <div className="flex items-center gap-4 border-t border-white/[0.07] pt-4 text-[11.5px] text-faint">
-                    <span className="flex items-center gap-1.5">
-                      <span className={`h-1.5 w-1.5 rounded-full ${s.telegram_connected ? 'bg-sage' : 'bg-white/20'}`} />
-                      Telegram {s.telegram_connected ? 'connected' : 'off'}
-                    </span>
-                    <span>·</span>
-                    <span className="truncate">LLM {s.llm_model || '?'}</span>
+                  <div className="border-t border-white/[0.07] pt-4 text-[11.5px] text-faint">
+                    Pipeline LLM: <span className="text-mut">{s.llm_model || '?'}</span>
                   </div>
                 </>
               )}
@@ -241,6 +236,8 @@ interface ChannelSettings extends Settings {
 function ChannelFields({ s, onSaved }: { s: ChannelSettings; onSaved: () => void }) {
   if (s.ntfy_configured === undefined) return null
   const channels: { key: string; label: string; placeholder: string; configured: boolean }[] = [
+    { key: 'telegram_bot_token', label: 'Telegram token', placeholder: '123456:ABC… (from @BotFather)', configured: s.telegram_connected },
+    { key: 'telegram_chat_id', label: 'Telegram chat id', placeholder: 'your numeric chat id', configured: s.telegram_connected },
     { key: 'ntfy_topic', label: 'ntfy topic', placeholder: 'e.g. applypilot-x7k2', configured: !!s.ntfy_configured },
     { key: 'discord_webhook_url', label: 'Discord webhook', placeholder: 'https://discord.com/api/webhooks/…', configured: !!s.discord_configured },
     { key: 'slack_webhook_url', label: 'Slack webhook', placeholder: 'https://hooks.slack.com/…', configured: !!s.slack_configured },

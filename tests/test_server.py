@@ -663,3 +663,26 @@ def test_sse_unknown_run_closes_promptly(api):
     with client.stream("GET", "/api/run/log/stream", params={"run_id": "missing"}) as response:
         assert response.status_code == 200
         assert list(response.iter_text()) == []
+
+
+def test_settings_telegram_write_only_roundtrip(api):
+    client, app_dir, _ = api
+    # invalid token / chat id rejected
+    assert client.put("/api/settings", json={"telegram_bot_token": "not-a-token"}).status_code == 422
+    assert client.put("/api/settings", json={"telegram_chat_id": "abc"}).status_code == 422
+    # valid pair round-trips into .env and flips the boolean
+    r = client.put("/api/settings", json={
+        "telegram_bot_token": "123456:" + "A" * 30,
+        "telegram_chat_id": "987654321",
+    })
+    assert r.status_code == 200
+    assert r.json()["telegram_connected"] is True
+    env_text = (app_dir / ".env").read_text()
+    assert "TELEGRAM_BOT_TOKEN=123456:" in env_text
+    # the token value never appears in any GET payload
+    payload = client.get("/api/settings").text
+    assert "A" * 30 not in payload
+    # empty string removes both
+    client.put("/api/settings", json={"telegram_bot_token": "", "telegram_chat_id": ""})
+    assert client.get("/api/settings").json()["telegram_connected"] is False
+    assert "TELEGRAM_BOT_TOKEN" not in (app_dir / ".env").read_text()
