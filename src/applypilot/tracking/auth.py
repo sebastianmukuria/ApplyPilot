@@ -112,7 +112,10 @@ def _run_flow(creds_file: Path) -> Path:
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     flow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)
-    creds = flow.run_local_server(port=0, open_browser=True)
+    # timeout_seconds so an abandoned approval (e.g. a 403 on the consent
+    # screen, where no callback ever arrives) self-clears instead of blocking
+    # the local server thread forever and wedging future connect attempts.
+    creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300)
     _write_token(creds)
     return token_path()
 
