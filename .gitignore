@@ -51,3 +51,11 @@ web/app/node_modules/
 
 # Codex spec scaffolding (vendored references)
 docs/specs/reference/
+
+# OAuth client secret — never commit to a public repo
+src/applypilot/google_credentials.json
+google_credentials.json
+
+# video pipeline working files (regenerate with tools/videogen/build.py)
+tools/videogen/out/
+tools/videogen/assets/shots/

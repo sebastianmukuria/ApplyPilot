@@ -11,9 +11,14 @@ them against your résumé, writes tailored cover letters, and fills out the
 applications in a real Chrome — **pinging your phone (Telegram) when it needs
 you** and handing you the open browser for the final Submit.
 
-![ApplyPilot Flight Deck — bento deck, animated queue, live charts, and the paper-plane easter egg](docs/demo.gif)
+![ApplyPilot — animated trailer: discover, score, tailor, apply, track](docs/applypilot_trailer.gif)
 
-*([higher-quality video](docs/demo.mp4))*
+*▶ [Watch the full 60-second trailer](docs/applypilot_trailer.mp4) · [see the live UI](docs/demo.mp4)*
+
+> The trailer above was generated end-to-end by an autonomous pipeline —
+> script, motion graphics, narration, editing, and visual self-review — with no
+> filming and no manual editing. It lives in [`tools/videogen/`](tools/videogen/)
+> and you can re-run or re-script it yourself.
 
 > Forked from [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot).
 > This fork adds the Flight Deck web app above, a first-run setup wizard for

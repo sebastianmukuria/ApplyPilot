@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face { font-family:'Clash'; src:url('../assets/ClashDisplay-Variable.woff2') format('woff2'); font-weight:200 700; }
+  @font-face { font-family:'Geist'; src:url('../assets/geist.woff2') format('woff2'); font-weight:100 900; }
+  :root {
+    --canvas:#050505; --core:#0a0a0a; --ink:#f4f2ee; --mut:#8a8a85; --faint:#55554f;
+    --clay:#d97757; --clayhi:#e89070; --sage:#7fb069; --sky:#7aa7d9;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1280px; height:720px; overflow:hidden; background:var(--canvas);
+    font-family:'Geist',system-ui,sans-serif; color:var(--ink); }
+  /* atmosphere: aurora + grain, matching the app */
+  .aurora { position:fixed; inset:-20%; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(38% 32% at 18% 14%, rgba(217,119,87,0.12), transparent 70%),
+      radial-gradient(30% 28% at 84% 86%, rgba(127,176,105,0.07), transparent 70%),
+      radial-gradient(24% 22% at 72% 22%, rgba(122,167,217,0.06), transparent 70%); }
+  .grain { position:fixed; inset:0; z-index:60; pointer-events:none; opacity:.04;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  .vignette { position:fixed; inset:0; z-index:55; pointer-events:none;
+    box-shadow:inset 0 0 240px 60px rgba(0,0,0,0.55); }
+  .stage { position:relative; z-index:10; width:100%; height:100%;
+    display:flex; flex-direction:column; justify-content:center; padding:0 120px; }
+  .eyebrow { font-family:'Geist'; font-size:15px; font-weight:600; letter-spacing:.32em;
+    text-transform:uppercase; color:var(--clay); margin-bottom:26px; }
+  .display { font-family:'Clash'; font-weight:600; line-height:1.02; letter-spacing:-1px; color:var(--ink); }
+  .sub { font-family:'Geist'; color:var(--mut); line-height:1.5; margin-top:22px; max-width:760px; }
+  .clay { color:var(--clayhi); }
+  .word { display:inline-block; }            /* GSAP per-word reveal */
+  /* caption bar (readable when muted) */
+  .caption { position:fixed; left:0; right:0; bottom:54px; z-index:40; text-align:center;
+    padding:0 140px; font-size:22px; line-height:1.45; color:var(--ink);
+    text-shadow:0 2px 18px rgba(0,0,0,0.8); opacity:0; }
+  /* wordmark */
+  .mark { display:flex; align-items:center; gap:18px; }
+  .plane { color:var(--clay); }
+  /* funnel band */
+  .funnel { display:grid; grid-template-columns:repeat(4,1fr); gap:0;
+    border-top:1px solid rgba(255,255,255,.08); border-bottom:1px solid rgba(255,255,255,.08); margin-top:8px; }
+  .cell { padding:26px 28px; }
+  .cell + .cell { border-left:1px solid rgba(255,255,255,.06); }
+  .cell .lab { font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--faint); }
+  .cell .num { font-family:'Clash'; font-weight:600; font-size:46px; margin-top:8px;
+    font-variant-numeric:tabular-nums; }
+  /* feature pills */
+  .pills { display:flex; gap:14px; flex-wrap:wrap; margin-top:30px; }
+  .pill { font-family:'Geist'; font-size:16px; color:var(--mut); padding:12px 20px;
+    border-radius:999px; border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.02); }
+  .pill .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:9px; vertical-align:1px; }
+  /* screenshot framing */
+  .shot { position:absolute; inset:0; z-index:5; display:flex; align-items:center; justify-content:center; }
+  .shot img { width:1100px; border-radius:18px; box-shadow:0 30px 90px rgba(0,0,0,.6);
+    outline:1px solid rgba(255,255,255,.08); }
+  .shotcap { position:fixed; top:64px; left:120px; z-index:30; }
+  /* progress ticks (scene position) */
+  .ticks { position:fixed; bottom:26px; left:50%; transform:translateX(-50%); z-index:40; display:flex; gap:6px; }
+  .tick { width:22px; height:3px; border-radius:3px; background:rgba(255,255,255,.14); }
+  .tick.on { background:var(--clay); }
+</style>
+</head>
+<body>
+  <div class="aurora"></div>
+  <div class="vignette"></div>
+  <div class="grain"></div>
+  <div id="stage" class="stage"></div>
+  <div id="caption" class="caption"></div>
+  <div id="ticks" class="ticks"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script>
+  // The build injects window.SCENE = {kind, ...} and window.CTX = {index,total,duration}.
+  function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  function words(text) { return text.split(' ').map(w => `<span class="word">${w}</span>`).join(' '); }
+
+  function buildTicks(idx, total) {
+    const t = document.getElementById('ticks');
+    for (let i = 0; i < total; i++) { const d = el('span', 'tick' + (i <= idx ? ' on' : '')); t.appendChild(d); }
+  }
+
+  function run() {
+    if (window.__built) return;     // fonts.ready + fallback both fire — build once
+    window.__built = true;
+    const S = window.SCENE || {}, C = window.CTX || { index: 0, total: 1, duration: 4 };
+    const stage = document.getElementById('stage');
+    const cap = document.getElementById('caption');
+    buildTicks(C.index, C.total);
+    const ease = 'power3.out';
+    const tl = gsap.timeline();
+
+    if (S.kind === 'title') {
+      stage.appendChild(el('div', 'eyebrow', S.eyebrow || ''));
+      const mark = el('div', 'mark');
+      mark.appendChild(el('span', 'plane', planeSVG(64)));
+      mark.appendChild(el('span', 'display', S.title || ''));
+      mark.querySelector('.display').style.fontSize = '92px';
+      stage.appendChild(mark);
+      if (S.sub) stage.appendChild(el('div', 'sub', S.sub)).style.fontSize = '22px';
+      tl.from('.eyebrow', { y: 24, opacity: 0, duration: .7, ease })
+        .from('.plane', { x: -40, opacity: 0, rotate: -18, duration: .8, ease }, '-=.3')
+        .from('.display', { y: 40, opacity: 0, filter: 'blur(10px)', duration: .9, ease }, '-=.5')
+        .from('.sub', { y: 20, opacity: 0, duration: .7, ease }, '-=.4');
+
+    } else if (S.kind === 'statement') {
+      if (S.eyebrow) stage.appendChild(el('div', 'eyebrow', S.eyebrow));
+      const d = el('div', 'display', words(S.title || ''));
+      d.style.fontSize = (S.size || 64) + 'px';
+      stage.appendChild(d);
+      if (S.sub) { const s = el('div', 'sub', S.sub); s.style.fontSize = '21px'; stage.appendChild(s); }
+      tl.from('.word', { y: 30, opacity: 0, filter: 'blur(6px)', stagger: .06, duration: .7, ease })
+        .from('.sub', { y: 16, opacity: 0, duration: .6, ease }, '-=.2');
+
+    } else if (S.kind === 'funnel') {
+      if (S.eyebrow) stage.appendChild(el('div', 'eyebrow', S.eyebrow));
+      stage.appendChild(el('div', 'display', S.title || '')).style.fontSize = '40px';
+      const band = el('div', 'funnel');
+      (S.cells || []).forEach(c => {
+        const cell = el('div', 'cell');
+        cell.appendChild(el('div', 'lab', c.label));
+        const n = el('div', 'num', '0'); n.dataset.to = c.value; n.style.color = c.accent ? 'var(--clayhi)' : 'var(--ink)';
+        cell.appendChild(n); band.appendChild(cell);
+      });
+      stage.appendChild(band);
+      tl.from('.display', { y: 24, opacity: 0, duration: .6, ease })
+        .from('.cell', { y: 26, opacity: 0, stagger: .12, duration: .6, ease }, '-=.2');
+      document.querySelectorAll('.num').forEach(n => {
+        const to = +n.dataset.to;
+        tl.to(n, { duration: 1.1, ease: 'power2.out', onUpdate() {
+          n.textContent = Math.round(to * this.progress()).toLocaleString();
+        } }, '-=.7');
+      });
+
+    } else if (S.kind === 'feature') {
+      stage.appendChild(el('div', 'eyebrow', S.eyebrow || ''));
+      stage.appendChild(el('div', 'display', words(S.title || ''))).style.fontSize = '56px';
+      if (S.sub) stage.appendChild(el('div', 'sub', S.sub)).style.fontSize = '21px';
+      if (S.pills) {
+        const p = el('div', 'pills');
+        S.pills.forEach(x => p.appendChild(el('span', 'pill',
+          `<span class="dot" style="background:${x.color || 'var(--clay)'}"></span>${x.text}`)));
+        stage.appendChild(p);
+      }
+      tl.from('.eyebrow', { y: 18, opacity: 0, duration: .5, ease })
+        .from('.word', { y: 26, opacity: 0, filter: 'blur(5px)', stagger: .05, duration: .6, ease }, '-=.2')
+        .from('.sub', { y: 16, opacity: 0, duration: .6, ease }, '-=.3')
+        .from('.pill', { y: 18, opacity: 0, stagger: .1, duration: .5, ease }, '-=.3');
+
+    } else if (S.kind === 'shot') {
+      const wrap = el('div', 'shot');
+      const img = document.createElement('img'); img.src = S.image; wrap.appendChild(img);
+      document.body.insertBefore(wrap, document.getElementById('stage'));
+      if (S.eyebrow) {
+        const c = el('div', 'shotcap');
+        c.appendChild(el('div', 'eyebrow', S.eyebrow));
+        if (S.title) { const t = el('div', 'display', S.title); t.style.fontSize = '34px'; c.appendChild(t); }
+        document.body.appendChild(c);
+        tl.from('.shotcap', { y: 18, opacity: 0, duration: .6, ease }, '+=.1');
+      }
+      tl.from('.shot img', { scale: 1.06, opacity: 0, duration: 1.0, ease }, 0)
+        .to('.shot img', { scale: 1.0, duration: (C.duration), ease: 'none' }, 0); // slow ken-burns
+    }
+
+    // caption fade in/out across the scene
+    if (S.caption) {
+      cap.textContent = S.caption;
+      gsap.to(cap, { opacity: 1, duration: .5, delay: .3 });
+      gsap.to(cap, { opacity: 0, duration: .5, delay: Math.max(1, C.duration - .6) });
+    }
+    window.__ready = true;
+  }
+
+  function planeSVG(s) {
+    return `<svg width="${s}" height="${s}" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M28 5 L13 26 l-1.6-8.2 L4 13 Z M13 26 l3.2-6.4" stroke="currentColor" stroke-width="1.6"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  }
+
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(run); setTimeout(run, 600); }
+  else run();
+  </script>
+</body>
+</html>
