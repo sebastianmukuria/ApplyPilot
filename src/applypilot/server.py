@@ -449,8 +449,26 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tracking/status")
     def tracking_status():
-        from applypilot.tracking import sync as tracking_sync
-        return tracking_sync.status()
+        from applypilot.tracking import auth as tracking_auth, sync as tracking_sync
+        st = tracking_sync.status()
+        st["has_credentials"] = tracking_auth.has_credentials()
+        st["connect_phase"] = tracking_auth.connect_phase()["phase"]
+        return st
+
+    @app.post("/api/tracking/connect")
+    def tracking_connect():
+        """One-click: open the Google consent screen in the user's browser."""
+        from applypilot.tracking import auth as tracking_auth
+        try:
+            return tracking_auth.start_connect()
+        except tracking_auth.CredentialsMissing as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    @app.post("/api/tracking/disconnect")
+    def tracking_disconnect():
+        from applypilot.tracking import auth as tracking_auth
+        tracking_auth.disconnect()
+        return {"ok": True}
 
     @app.post("/api/tracking/sync")
     async def tracking_sync_now():

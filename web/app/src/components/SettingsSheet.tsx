@@ -7,7 +7,7 @@ import { api, type Settings, type TrackingStatus } from '../lib/api'
 import { enableBrowserNotifications, type AlertPrefs } from '../lib/alerts'
 import { DECK } from '../lib/motion'
 import { ResumeLibrary } from './ResumeLibrary'
-import { Eyebrow } from './ui'
+import { Eyebrow, IslandButton } from './ui'
 
 const MODELS = ['sonnet', 'haiku', 'opus']
 const SALARY_MODES = [
@@ -318,15 +318,29 @@ function TrackingCard() {
     load()
   }, [])
 
-  // poll while a backfill runs
+  // poll while a backfill runs OR while a connect is opening
   useEffect(() => {
-    if (!st?.backfill || st.backfill.done_at) return
-    const t = setInterval(load, 2500)
+    const connecting = st?.connect_phase === 'opening'
+    const backfilling = st?.backfill && !st.backfill.done_at
+    if (!connecting && !backfilling) return
+    const t = setInterval(load, connecting ? 1500 : 2500)
     return () => clearInterval(t)
-  }, [st?.backfill])
+  }, [st?.connect_phase, st?.backfill])
 
   if (missing || !st) return null
   const bf = st.backfill
+
+  const connect = async () => {
+    setBusy(true)
+    try {
+      await api.trackingConnect()
+      load()
+    } catch (e) {
+      alert(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="space-y-3 border-t border-white/[0.07] pt-4">
@@ -338,11 +352,28 @@ function TrackingCard() {
         </span>
       </div>
       {!st.configured ? (
-        <p className="text-[11.5px] leading-relaxed text-faint">
-          Reads application emails (metadata only, read-only scope) to track responses, interviews,
-          and rejections automatically. Run <code className="text-mut">applypilot track auth</code> in
-          a terminal to connect, then reopen this sheet.
-        </p>
+        <div className="space-y-3">
+          <p className="text-[11.5px] leading-relaxed text-faint">
+            Reads application emails (read-only, metadata only — sender, subject, date) to chart
+            your responses, interviews, and rejections automatically. Your inbox content never
+            leaves this computer.
+          </p>
+          {st.connect_phase === 'opening' ? (
+            <div className="flex items-center gap-2 text-[12px] text-sky">
+              <CircleNotch size={13} className="animate-spin" /> Approve ApplyPilot in the browser window that just opened…
+            </div>
+          ) : st.has_credentials ? (
+            <IslandButton onClick={connect} disabled={busy} icon={<EnvelopeOpen weight="light" size={13} />}>
+              Connect Gmail
+            </IslandButton>
+          ) : (
+            <p className="rounded-xl bg-white/[0.02] p-3 text-[11px] leading-relaxed text-faint ring-1 ring-white/[0.06]">
+              One setup step is still needed: a Google OAuth client. See SETUP.md → Email tracking,
+              drop <code className="text-mut">google_credentials.json</code> in ~/.applypilot, then
+              this becomes a single click.
+            </p>
+          )}
+        </div>
       ) : (
         <>
           <div className="flex items-center justify-between text-[11.5px] text-faint">

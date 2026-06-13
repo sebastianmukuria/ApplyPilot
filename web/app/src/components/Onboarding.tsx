@@ -1,7 +1,7 @@
 // First-run wizard: walks a non-technical user from zero to a scanning
 // pipeline. Every optional step says exactly what access it wants and why,
 // and can be skipped. Auto-opens when the basics are missing.
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import {
   ArrowRight, Check, CircleNotch, EnvelopeOpen, FilePdf, MagnifyingGlass,
@@ -343,6 +343,14 @@ data anywhere except the one-line ping itself."
 }
 
 function TrackingStep({ configured, onNext }: { configured: boolean; onNext: () => void }) {
+  const [phase, setPhase] = useState<'idle' | 'opening' | 'connected'>(configured ? 'connected' : 'idle')
+  const [hasCreds, setHasCreds] = useState(true)
+  useEffect(() => {
+    api.trackingStatus().then((s) => { setHasCreds(s.has_credentials ?? false); if (s.configured) setPhase('connected') }).catch(() => {})
+  }, [])
+  const connect = async () => {
+    try { await api.trackingConnect(); setPhase('opening') } catch { setHasCreds(false) }
+  }
   return (
     <StepShell
       icon={<EnvelopeOpen weight="light" size={18} />}
@@ -361,11 +369,31 @@ function TrackingStep({ configured, onNext }: { configured: boolean; onNext: () 
         <strong className="text-mut">What it actually accesses, honestly:</strong> read-only
         Gmail permission, fetching only sender / subject / date / a one-line snippet —
         never full email bodies. Everything is processed and stored on this computer.
-        You authorize it yourself with Google in your own browser
-        (<code className="text-mut">applypilot track auth</code> in a terminal), and you can
-        revoke access any time at myaccount.google.com. If reading email metadata feels
-        like too much, skip it — you can always log outcomes by hand on each job card.
+        You approve it yourself in a Google window — one click below — and can revoke access
+        any time at myaccount.google.com. If reading email metadata feels like too much, skip
+        it; you can always log outcomes by hand on each job card.
       </div>
+      {phase === 'connected' ? (
+        <div className="flex items-center gap-2 text-[12.5px] text-sage">
+          <Check weight="bold" size={14} /> Gmail connected
+        </div>
+      ) : phase === 'opening' ? (
+        <div className="flex items-center gap-2 text-[12.5px] text-sky">
+          <CircleNotch size={13} className="animate-spin" /> Approve ApplyPilot in the browser window…
+        </div>
+      ) : hasCreds ? (
+        <button
+          onClick={connect}
+          className="inline-flex items-center gap-2 rounded-full bg-clay px-4 py-2 text-[12.5px] font-medium text-[#140a06] transition-colors hover:bg-clay-hi"
+        >
+          <EnvelopeOpen weight="light" size={14} /> Connect Gmail
+        </button>
+      ) : (
+        <p className="text-[11.5px] leading-relaxed text-faint">
+          One setup step is still needed (a Google OAuth client) — see SETUP.md → Email tracking.
+          You can do this later; skip for now.
+        </p>
+      )}
     </StepShell>
   )
 }

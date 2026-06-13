@@ -125,6 +125,8 @@ export interface AppEvent {
 
 export interface TrackingStatus {
   configured: boolean
+  has_credentials?: boolean
+  connect_phase?: 'idle' | 'opening' | 'connected' | 'error'
   last_sync: string | null
   backfill: { phase: string; scanned: number; total: number; events: number; done_at?: string } | null
   events_total: number
@@ -244,6 +246,12 @@ export const api = {
   },
   trackingStatus(): Promise<TrackingStatus> {
     return http(`/api/tracking/status`)
+  },
+  trackingConnect() {
+    return http<{ phase: string }>(`/api/tracking/connect`, { method: 'POST' })
+  },
+  trackingDisconnect() {
+    return http(`/api/tracking/disconnect`, { method: 'POST' })
   },
   trackingSync() {
     return http<{ scanned: number; events: number; outcomes_set: number }>(`/api/tracking/sync`, { method: 'POST' })
