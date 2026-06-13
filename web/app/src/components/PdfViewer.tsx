@@ -2,6 +2,7 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { DownloadSimple, X } from '@phosphor-icons/react'
 import { DECK } from '../lib/motion'
+import { PdfCanvas } from './PdfCanvas'
 import { Eyebrow } from './ui'
 
 export interface PdfTarget {
@@ -52,12 +53,7 @@ export function PdfViewer({ target, onClose }: { target: PdfTarget | null; onClo
                   </button>
                 </div>
               </div>
-              {/* browser-native pdf viewer; #toolbar=0 trims chrome's header where supported */}
-              <iframe
-                title={target.title}
-                src={`${target.src}#toolbar=0&view=FitH`}
-                className="min-h-0 w-full flex-1 bg-[#1a1a1a]"
-              />
+              <PdfCanvas src={target.src} />
             </div>
           </motion.div>
         </motion.div>

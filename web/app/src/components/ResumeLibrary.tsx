@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { Crown, FilePdf, UploadSimple, X } from '@phosphor-icons/react'
 import { api, type ResumeItem } from '../lib/api'
 import { DECK } from '../lib/motion'
+import { PdfCanvas } from './PdfCanvas'
 import { Eyebrow, IslandButton } from './ui'
 
 const KIND_LABEL: Record<ResumeItem['kind'], string> = {
@@ -152,12 +153,7 @@ export function ResumeLibrary({ open, onClose }: { open: boolean; onClose: () =>
                 <div className="flex min-h-0 flex-col">
                   {sel ? (
                     <>
-                      <iframe
-                        key={sel.id}
-                        title={sel.name}
-                        src={`${api.resumeFileUrl(sel.id)}#toolbar=0&view=FitH`}
-                        className="min-h-0 w-full flex-1 bg-[#1a1a1a]"
-                      />
+                      <PdfCanvas key={sel.id} src={api.resumeFileUrl(sel.id)} />
                       <div className="flex items-center justify-between gap-3 border-t border-white/[0.07] px-5 py-3.5">
                         <span className="truncate text-[12px] text-faint">{sel.name}</span>
                         {sel.is_master ? (

@@ -516,7 +516,10 @@ def _resumes_payload() -> dict:
     base = app_dir / "resume.pdf"
     if base.exists():
         items.append(_resume_item("base:resume.pdf", base, "base", master=master))
-    if master.exists():
+    # master_resume.pdf is a copy destination, not a library member: list it
+    # only when no listed item already IS the master (e.g. it was set from the
+    # CLI before the library existed) — otherwise two rows would wear the crown.
+    if master.exists() and not any(i["is_master"] for i in items):
         items.append(_resume_item("master:master_resume.pdf", master, "master", master=master))
     return {"master_exists": master.exists(), "items": items}
 

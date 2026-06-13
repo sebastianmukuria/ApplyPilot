@@ -465,9 +465,23 @@ def test_resume_library_lists_kinds_and_master_matches(api):
     by_id = {item["id"]: item for item in data["items"]}
     assert by_id["lib:library.pdf"]["kind"] == "library"
     assert by_id["base:resume.pdf"]["kind"] == "base"
-    assert by_id["master:master_resume.pdf"]["kind"] == "master"
+    # exactly ONE crown: the library item that IS the master wears it; the
+    # redundant master_resume.pdf row is folded away
     assert by_id["lib:library.pdf"]["is_master"] is True
+    assert "master:master_resume.pdf" not in by_id
+    assert sum(1 for i in data["items"] if i["is_master"]) == 1
+
+
+def test_resume_master_row_shown_when_unmatched(api):
+    client, app_dir, _ = api
+    (app_dir / "resumes").mkdir()
+    (app_dir / "resumes" / "library.pdf").write_bytes(b"%PDF-1.4\nother\n")
+    (app_dir / "master_resume.pdf").write_bytes(b"%PDF-1.4\ncli-set\n")
+
+    data = client.get("/api/resumes").json()
+    by_id = {item["id"]: item for item in data["items"]}
     assert by_id["master:master_resume.pdf"]["is_master"] is True
+    assert by_id["lib:library.pdf"]["is_master"] is False
 
 
 def test_resume_id_path_traversal_is_rejected(api):
