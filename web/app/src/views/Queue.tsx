@@ -1,7 +1,7 @@
 // Queue: sticky filter rail + animated card list.
 import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { MagnifyingGlass } from '@phosphor-icons/react'
+import { MagnifyingGlass, X } from '@phosphor-icons/react'
 import { api, type Job, type JobsQuery } from '../lib/api'
 import { DECK } from '../lib/motion'
 import { JobCard } from '../components/JobCard'
@@ -14,7 +14,22 @@ const SORTS: { id: NonNullable<JobsQuery['sort']>; label: string }[] = [
   { id: 'company', label: 'A–Z' },
 ]
 
-export function Queue({ onLaunch, refreshKey }: { onLaunch: (j: Job) => void; refreshKey: number }) {
+const STAGE_LABELS: Record<string, string> = {
+  discovered: 'Discovered', scored: 'Scored', strong: 'Strong (≥7)',
+  docs_ready: 'Docs ready', applied: 'Applied', handoff: 'Handed off', failed: 'Failed',
+}
+
+export function Queue({
+  onLaunch,
+  refreshKey,
+  stage,
+  onClearStage,
+}: {
+  onLaunch: (j: Job) => void
+  refreshKey: number
+  stage?: string | null
+  onClearStage?: () => void
+}) {
   const [minScore, setMinScore] = useState(8)
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<NonNullable<JobsQuery['sort']>>('score')
@@ -29,18 +44,21 @@ export function Queue({ onLaunch, refreshKey }: { onLaunch: (j: Job) => void; re
   const [bump, setBump] = useState(0)
 
   const query = useMemo<JobsQuery>(
-    () => ({
-      min_score: minScore,
-      search: search || undefined,
-      sort,
-      only_docs_ready: docsReady,
-      show_applied: showApplied,
-      hide_flagged: hideFlagged,
-      min_salary_k: minSalaryK,
-      include_no_salary: includeNoSalary,
-      limit: 100,
-    }),
-    [minScore, search, sort, docsReady, showApplied, hideFlagged, minSalaryK, includeNoSalary],
+    () =>
+      stage
+        ? { stage, search: search || undefined, sort, limit: 200 }
+        : {
+            min_score: minScore,
+            search: search || undefined,
+            sort,
+            only_docs_ready: docsReady,
+            show_applied: showApplied,
+            hide_flagged: hideFlagged,
+            min_salary_k: minSalaryK,
+            include_no_salary: includeNoSalary,
+            limit: 100,
+          },
+    [stage, minScore, search, sort, docsReady, showApplied, hideFlagged, minSalaryK, includeNoSalary],
   )
 
   useEffect(() => {
@@ -65,13 +83,38 @@ export function Queue({ onLaunch, refreshKey }: { onLaunch: (j: Job) => void; re
 
   return (
     <div className="mx-auto grid w-full max-w-7xl gap-8 px-4 pb-32 lg:grid-cols-[280px_1fr]">
-      {/* filter rail */}
+      {/* filter rail (or a stage chip when drilling into a funnel number) */}
       <motion.aside
         initial={{ opacity: 0, x: -16 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.7, ease: DECK }}
         className="lg:sticky lg:top-28 lg:h-max"
       >
+        {stage ? (
+          <div className="shell">
+            <div className="core space-y-4 p-5">
+              <Eyebrow>Viewing</Eyebrow>
+              <div className="flex items-center gap-2 rounded-2xl bg-clay/10 px-3.5 py-3 ring-1 ring-clay/25">
+                <span className="flex-1 text-[13px] font-medium text-clay-hi">{STAGE_LABELS[stage] ?? stage}</span>
+                <button onClick={onClearStage} className="text-clay-hi/70 transition-colors hover:text-clay-hi" title="Back to all filters">
+                  <X weight="bold" size={14} />
+                </button>
+              </div>
+              <label className="flex items-center gap-2 rounded-full bg-white/[0.03] px-3.5 py-2.5 ring-1 ring-white/[0.07] focus-within:ring-clay/40">
+                <MagnifyingGlass weight="light" size={15} className="text-faint" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search within"
+                  className="w-full bg-transparent text-[13px] text-ink outline-none placeholder:text-faint"
+                />
+              </label>
+              <button onClick={onClearStage} className="text-[12px] text-mut underline-offset-2 hover:text-ink hover:underline">
+                ← back to filtered queue
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="shell">
           <div className="core space-y-6 p-5">
             <Eyebrow>Filters</Eyebrow>
@@ -124,13 +167,14 @@ export function Queue({ onLaunch, refreshKey }: { onLaunch: (j: Job) => void; re
             </div>
           </div>
         </div>
+        )}
       </motion.aside>
 
       {/* card list */}
       <div className="min-w-0">
         <div className="mb-4 flex items-baseline justify-between">
           <span className="font-display text-[12px] uppercase tracking-[0.24em] text-mut">
-            {loading ? 'Scanning…' : `${total} roles on the board`}
+            {loading ? 'Scanning…' : stage ? `${total} ${(STAGE_LABELS[stage] ?? stage).toLowerCase()}` : `${total} roles on the board`}
           </span>
         </div>
         <motion.div layout className="space-y-4">

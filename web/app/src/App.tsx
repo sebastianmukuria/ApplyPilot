@@ -20,6 +20,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [model, setModel] = useState(() => localStorage.getItem('ap.model') ?? 'sonnet')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [queueStage, setQueueStage] = useState<string | null>(null)
   const { tap, armed } = useFlightLog()
   const [alertPrefs, setAlertPrefs] = useAlertPrefs()
   useRunAlerts(runs, alertPrefs)
@@ -84,7 +85,7 @@ export default function App() {
       <div className="aurora" />
       <div className="grain" />
 
-      <CommandBar view={view} onView={setView} runs={runs} onLogoTap={tap} onSettings={() => setSettingsOpen(true)} />
+      <CommandBar view={view} onView={(v) => { if (v === 'queue') setQueueStage(null); setView(v) }} runs={runs} onLogoTap={tap} onSettings={() => setSettingsOpen(true)} />
 
       <main className="relative z-10 pt-28">
         <AnimatePresence mode="wait">
@@ -96,9 +97,18 @@ export default function App() {
             transition={{ duration: 0.55, ease: DECK }}
           >
             {view === 'deck' && (
-              <Deck stats={stats} runs={runs} onGoQueue={() => setView('queue')} onChanged={refresh} onLaunch={launch} />
+              <Deck
+                stats={stats}
+                runs={runs}
+                onGoQueue={() => { setQueueStage(null); setView('queue') }}
+                onStage={(s) => { setQueueStage(s); setView('queue') }}
+                onChanged={refresh}
+                onLaunch={launch}
+              />
             )}
-            {view === 'queue' && <Queue onLaunch={launch} refreshKey={refreshKey} />}
+            {view === 'queue' && (
+              <Queue onLaunch={launch} refreshKey={refreshKey} stage={queueStage} onClearStage={() => setQueueStage(null)} />
+            )}
             {view === 'intel' && <Intel stats={stats} />}
             {view === 'answers' && <Answers />}
           </motion.div>

@@ -150,6 +150,7 @@ def create_app() -> FastAPI:
         min_salary_k: int = 0,
         hide_flagged: bool = True,
         hidden: bool = False,
+        stage: str | None = None,
         limit: int = Query(200, ge=0),
         offset: int = Query(0, ge=0),
     ):
@@ -158,6 +159,7 @@ def create_app() -> FastAPI:
             sources=_parse_sources(sources),
             search=search,
             sort=sort,
+            stage=stage,
             show_applied=show_applied,
             only_docs_ready=only_docs_ready,
             include_no_salary=include_no_salary,
@@ -760,6 +762,19 @@ def _response_rate(responded: int, applied: int) -> float:
     return responded / applied
 
 
+# Stage drill-downs match the Deck funnel counts EXACTLY (see panel.counts):
+# selecting one shows precisely those jobs, with the curation filters bypassed.
+STAGE_SQL = {
+    "discovered": "1=1",
+    "scored": "fit_score IS NOT NULL",
+    "strong": "fit_score >= 7",
+    "docs_ready": "tailored_resume_path IS NOT NULL",
+    "applied": "apply_status = 'applied'",
+    "handoff": "apply_status = 'handoff'",
+    "failed": "apply_status = 'failed'",
+}
+
+
 def _queue_rows(
     *,
     min_score: int,
@@ -772,7 +787,19 @@ def _queue_rows(
     min_salary_k: int,
     hide_flagged: bool,
     include_hidden: bool,
+    stage: str | None = None,
 ) -> list[dict]:
+    if stage and stage in STAGE_SQL:
+        # Funnel drill-down: just this stage's jobs, search as the only refine,
+        # so total_matched equals the funnel number the user clicked.
+        rows = _fetch_rows(f"SELECT * FROM jobs WHERE {STAGE_SQL[stage]}", [])
+        needle = search.lower() if search else ""
+        result = [
+            r for r in rows
+            if not needle or needle in ((r["company"] or "") + (r["title"] or "")).lower()
+        ]
+        return _sort_rows(result, sort)
+
     sql = "SELECT * FROM jobs WHERE fit_score >= ?"
     params: list = [min_score]
     if sources:
@@ -802,15 +829,19 @@ def _queue_rows(
             continue
         filtered.append(r)
 
+    return _sort_rows(filtered, sort)
+
+
+def _sort_rows(rows: list[dict], sort: str) -> list[dict]:
     sort_key = {
         "score": lambda r: -(r["fit_score"] or 0),
         "salary": lambda r: -panel.salary_num(r["salary"]),
         "company": lambda r: (r["company"] or "").lower(),
         "location": lambda r: (r["location"] or "").lower(),
         "recent": lambda r: r["discovered_at"] or "",
-    }[sort]
-    filtered.sort(key=sort_key, reverse=(sort == "recent"))
-    return filtered
+    }.get(sort, lambda r: -(r["fit_score"] or 0))
+    rows.sort(key=sort_key, reverse=(sort == "recent"))
+    return rows
 
 
 def _job_shape(row: dict, hidden_urls: set | None = None) -> dict:

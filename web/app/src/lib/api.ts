@@ -37,6 +37,7 @@ export interface JobsQuery {
   min_salary_k?: number
   hide_flagged?: boolean
   hidden?: boolean
+  stage?: string
   limit?: number
   offset?: number
 }

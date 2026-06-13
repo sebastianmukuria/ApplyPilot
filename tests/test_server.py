@@ -741,3 +741,44 @@ def test_settings_telegram_write_only_roundtrip(api):
     client.put("/api/settings", json={"telegram_bot_token": "", "telegram_chat_id": ""})
     assert client.get("/api/settings").json()["telegram_connected"] is False
     assert "TELEGRAM_BOT_TOKEN" not in (app_dir / ".env").read_text()
+
+
+def test_stage_drilldown_matches_funnel_counts(api):
+    """Clicking a funnel number must show EXACTLY that many jobs (counts match)."""
+    client, app_dir, _ = api
+    conn = __import__("sqlite3").connect(app_dir / "applypilot.db")
+    # mixed jobs across stages, incl. staffing/no-salary that the normal queue hides
+    seed = [
+        ("u1", "Acme", 9, "/r.txt", "/c.txt", None, None),          # strong, docs-ready
+        ("u2", "Beta", 6, "/r.txt", None, None, None),              # scored, not strong
+        ("u3", "Robert Half Staffing", 8, None, None, None, None),  # strong, flagged
+        ("u4", "Gamma", None, None, None, None, None),              # discovered only
+        ("u5", "Delta", 10, "/r.txt", "/c.txt", "applied", "2026-01-01"),
+        ("u6", "Eps", 7, "/r.txt", "/c.txt", "handoff", None),
+        ("u7", "Zeta", 8, "/r.txt", None, "failed", None),
+    ]
+    for url, co, score, rp, cp, st, at in seed:
+        conn.execute(
+            "INSERT INTO jobs (url, company, title, site, fit_score, "
+            "tailored_resume_path, cover_letter_path, apply_status, applied_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (url, co, "Eng", "indeed", score, rp, cp, st, at),
+        )
+    conn.commit()
+    conn.close()
+
+    from applypilot.server import STAGE_SQL
+    import sqlite3 as _s
+    raw = _s.connect(app_dir / "applypilot.db")
+    for stage, frag in STAGE_SQL.items():
+        want = raw.execute(f"SELECT COUNT(*) FROM jobs WHERE {frag}").fetchone()[0]
+        got = client.get(f"/api/jobs?stage={stage}&limit=0").json()["total_matched"]
+        assert got == want, f"{stage}: drill {got} != funnel {want}"
+    raw.close()
+
+    # a strong-flagged staffing job is hidden from the normal queue but PRESENT
+    # in the strong drill-down (the whole point — see what the number counts)
+    normal = client.get("/api/jobs?min_score=8").json()
+    assert not any(j["url"] == "u3" for j in normal["jobs"])
+    strong = client.get("/api/jobs?stage=strong&limit=200").json()
+    assert any(j["url"] == "u3" for j in strong["jobs"])

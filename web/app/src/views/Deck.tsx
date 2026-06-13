@@ -8,26 +8,28 @@ import { PipelineBar } from '../components/PipelineBar'
 import { RunStack } from '../components/RunStack'
 import { Bezel, CountUp, Eyebrow, GhostAction, IslandButton, ScoreChip } from '../components/ui'
 
-const FUNNEL: { key: string; label: string }[] = [
-  { key: 'total', label: 'Discovered' },
-  { key: 'scored', label: 'Scored' },
-  { key: 'ge7', label: 'Strong' },
-  { key: 'tailored', label: 'Docs ready' },
-  { key: 'applied', label: 'Applied' },
-  { key: 'handoff', label: 'Handed off' },
-  { key: 'failed', label: 'Failed' },
+const FUNNEL: { key: string; label: string; stage: string }[] = [
+  { key: 'total', label: 'Discovered', stage: 'discovered' },
+  { key: 'scored', label: 'Scored', stage: 'scored' },
+  { key: 'ge7', label: 'Strong', stage: 'strong' },
+  { key: 'tailored', label: 'Docs ready', stage: 'docs_ready' },
+  { key: 'applied', label: 'Applied', stage: 'applied' },
+  { key: 'handoff', label: 'Handed off', stage: 'handoff' },
+  { key: 'failed', label: 'Failed', stage: 'failed' },
 ]
 
 export function Deck({
   stats,
   runs,
   onGoQueue,
+  onStage,
   onChanged,
   onLaunch,
 }: {
   stats: Stats | null
   runs: RunsResponse | null
   onGoQueue: () => void
+  onStage: (stage: string) => void
   onChanged: () => void
   onLaunch: (j: Job) => void
 }) {
@@ -99,11 +101,13 @@ export function Deck({
       <Bezel className="mt-4" i={2}>
         <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7">
           {FUNNEL.map((f, i) => (
-            <div
+            <button
               key={f.key}
-              className={`p-5 ${i > 0 ? 'border-l border-white/[0.06]' : ''} ${i >= 4 ? 'max-lg:border-t max-lg:border-white/[0.06]' : ''}`}
+              onClick={() => onStage(f.stage)}
+              title={`View ${f.label.toLowerCase()} jobs`}
+              className={`group p-5 text-left transition-colors hover:bg-white/[0.025] ${i > 0 ? 'border-l border-white/[0.06]' : ''} ${i >= 4 ? 'max-lg:border-t max-lg:border-white/[0.06]' : ''}`}
             >
-              <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-faint">{f.label}</div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.18em] text-faint group-hover:text-mut">{f.label}</div>
               <div
                 className={`mt-1.5 font-display text-[28px] font-semibold tracking-tight ${
                   f.key === 'failed' && (funnel[f.key] ?? 0) > 0 ? 'text-clay-hi' : 'text-ink'
@@ -111,7 +115,7 @@ export function Deck({
               >
                 <CountUp value={funnel[f.key] ?? 0} />
               </div>
-            </div>
+            </button>
           ))}
         </div>
       </Bezel>
