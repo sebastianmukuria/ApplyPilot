@@ -70,17 +70,26 @@ export function Deck({
 
         <Bezel className="lg:col-span-4" i={1}>
           <div className="flex h-full flex-col justify-between p-8">
-            <Eyebrow>Est. LLM spend</Eyebrow>
+            <Eyebrow>Claude usage</Eyebrow>
             <div>
               <div className="font-display text-5xl font-semibold tracking-tight text-ink">
-                $<CountUp value={stats?.spend.cost ?? 0} format={(n) => n.toFixed(2)} />
+                <CountUp
+                  value={(stats?.spend.sub_tok_in ?? 0) + (stats?.spend.sub_tok_out ?? 0)}
+                  format={(n) => (n >= 1000 ? (n / 1000).toFixed(0) + 'k' : Math.round(n).toString())}
+                />
+                <span className="ml-1.5 text-2xl text-mut">tokens</span>
               </div>
               <div className="tnum mt-2 text-[12px] text-faint">
-                ${stats?.spend.today.toFixed(2) ?? '0.00'} today · {stats?.spend.calls.toLocaleString() ?? 0} calls
+                {stats?.spend.sub_calls.toLocaleString() ?? 0} calls · ≈ ${stats?.spend.sub_cost.toFixed(2) ?? '0.00'} of API value
               </div>
-              <div className="tnum mt-1 text-[11px] text-faint">
-                + ${stats?.spend.sub_cost?.toFixed(2) ?? '0.00'} Claude compute — covered by subscription
+              <div className="mt-1 text-[11px] text-faint">
+                Covered by your Claude subscription — no metered cost.
               </div>
+              {(stats?.spend.cost ?? 0) > 0.01 && (
+                <div className="tnum mt-1 text-[11px] text-clay-hi">
+                  + ${stats?.spend.cost.toFixed(2)} billable (API key)
+                </div>
+              )}
             </div>
           </div>
         </Bezel>

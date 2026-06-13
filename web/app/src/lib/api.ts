@@ -51,6 +51,10 @@ export interface Stats {
     today: number
     sub_cost: number
     sub_today: number
+    sub_tok_in: number
+    sub_tok_out: number
+    sub_calls: number
+    sub_by_area: Record<string, { cost: number; in: number; out: number; calls: number }>
     tok_in: number
     tok_out: number
     calls: number

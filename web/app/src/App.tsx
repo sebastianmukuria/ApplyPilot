@@ -33,8 +33,11 @@ export default function App() {
       .then((ob: OnboardingState | null) => {
         if (!ob) return
         setOnboarding(ob)
+        // ?setup forces the wizard open regardless of state (a "redo setup" link);
+        // otherwise it auto-opens only when the basics are still missing.
+        const forced = new URLSearchParams(window.location.search).has('setup')
         const dismissed = localStorage.getItem('ap.onboard.dismissed') === '1'
-        if (!dismissed && (!ob.resume_ready || !ob.profile_ready || !ob.searches_ready)) {
+        if (forced || (!dismissed && (!ob.resume_ready || !ob.profile_ready || !ob.searches_ready))) {
           setShowWizard(true)
         }
       })

@@ -27,10 +27,14 @@ export function Intel({ stats }: { stats: Stats | null }) {
   const perDay = stats?.per_day ?? []
   const byStatus = stats?.status_breakdown ?? []
   const byScore = stats?.score_distribution ?? []
-  const spendModels = useMemo(
-    () => Object.entries(stats?.spend.by_model ?? {}).sort((a, b) => b[1].cost - a[1].cost),
+  const AREA_LABEL: Record<string, string> = {
+    apply: 'Applying (agent)', pipeline: 'Scoring & documents', other: 'Other',
+  }
+  const spendAreas = useMemo(
+    () => Object.entries(stats?.spend.sub_by_area ?? {}).sort((a, b) => b[1].cost - a[1].cost),
     [stats],
   )
+  const billable = stats?.spend.cost ?? 0
 
   return (
     <motion.div variants={stagger} initial="hidden" animate="show" className="mx-auto w-full max-w-7xl px-4 pb-32">
@@ -130,24 +134,32 @@ export function Intel({ stats }: { stats: Stats | null }) {
 
         <Bezel className="lg:col-span-5" i={3}>
           <div className="p-6">
-            <Eyebrow>Spend by model</Eyebrow>
+            <Eyebrow>Claude usage by area</Eyebrow>
             <div className="mt-5 space-y-3">
-              {spendModels.length ? (
-                spendModels.map(([model, v]) => (
+              {spendAreas.length ? (
+                spendAreas.map(([area, v]) => (
                   <div
-                    key={model}
-                    className="flex items-baseline justify-between rounded-xl bg-white/[0.025] px-3.5 py-2.5 ring-1 ring-white/[0.05]"
+                    key={area}
+                    className="rounded-xl bg-white/[0.025] px-3.5 py-2.5 ring-1 ring-white/[0.05]"
                   >
-                    <span className="truncate pr-3 text-[12.5px] text-mut">{model}</span>
-                    <span className="tnum text-[13px] font-medium text-ink">${v.cost.toFixed(2)}</span>
+                    <div className="flex items-baseline justify-between">
+                      <span className="truncate pr-3 text-[12.5px] text-mut">{AREA_LABEL[area] ?? area}</span>
+                      <span className="tnum text-[13px] font-medium text-ink">
+                        ≈ ${v.cost.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="tnum mt-0.5 text-[10.5px] text-faint">
+                      {v.calls.toLocaleString()} calls · {((v.in + v.out) / 1000).toFixed(1)}k tokens
+                    </div>
                   </div>
                 ))
               ) : (
-                <Empty>Usage tracking starts with your next pipeline run.</Empty>
+                <Empty>Usage appears as you run scoring and applies on Claude.</Empty>
               )}
               <p className="pt-1 text-[11px] leading-relaxed text-faint">
-                Billable estimates from the PRICES table. Claude apply rows show the
-                API-equivalent value — covered by your subscription, $0 billed.
+                "$" is the API-equivalent value of work your Claude subscription
+                covers — your plan is flat-rate, so nothing here is billed.
+                {billable > 0.01 && ` Plus $${billable.toFixed(2)} billable on an API key.`}
               </p>
             </div>
           </div>

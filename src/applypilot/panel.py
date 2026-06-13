@@ -168,8 +168,15 @@ def llm_spend() -> dict:
     kind="subscription" claude apply runs (explicit cost field, reported as
     the subscription-covered equivalent — never added to billable cost).
     """
-    out = {"cost": 0.0, "today": 0.0, "sub_cost": 0.0, "sub_today": 0.0,
-           "tok_in": 0, "tok_out": 0, "calls": 0, "by_model": {}}
+    out = {
+        # billable API spend (Gemini/OpenAI), real dollars
+        "cost": 0.0, "today": 0.0,
+        # subscription-covered Claude usage: api-equivalent value + real tokens
+        "sub_cost": 0.0, "sub_today": 0.0,
+        "sub_tok_in": 0, "sub_tok_out": 0, "sub_calls": 0, "sub_by_area": {},
+        # combined token totals (kept for back-compat)
+        "tok_in": 0, "tok_out": 0, "calls": 0, "by_model": {},
+    }
     usage_file = _path("USAGE_FILE")
     if not usage_file.exists():
         return out
@@ -180,20 +187,30 @@ def llm_spend() -> dict:
         except json.JSONDecodeError:
             continue
         model = r.get("model", "?")
+        tin, tout = r.get("in", 0), r.get("out", 0)
         if "cost" in r:
             cost = float(r.get("cost") or 0)
         else:
             p_in, p_out = max(((k, v) for k, v in PRICES.items() if model.startswith(k)),
                               key=lambda kv: len(kv[0]), default=("", DEFAULT_PRICE))[1]
-            cost = r.get("in", 0) / 1e6 * p_in + r.get("out", 0) / 1e6 * p_out
-        is_sub = r.get("kind") == "subscription"
-        bucket, bucket_today = ("sub_cost", "sub_today") if is_sub else ("cost", "today")
-        out[bucket] += cost
-        if r.get("ts", "").startswith(today):
-            out[bucket_today] += cost
-        out["tok_in"] += r.get("in", 0); out["tok_out"] += r.get("out", 0); out["calls"] += 1
+            cost = tin / 1e6 * p_in + tout / 1e6 * p_out
+        is_today = r.get("ts", "").startswith(today)
+        out["tok_in"] += tin; out["tok_out"] += tout; out["calls"] += 1
         m = out["by_model"].setdefault(model, {"cost": 0.0, "in": 0, "out": 0, "calls": 0})
-        m["cost"] += cost; m["in"] += r.get("in", 0); m["out"] += r.get("out", 0); m["calls"] += 1
+        m["cost"] += cost; m["in"] += tin; m["out"] += tout; m["calls"] += 1
+        if r.get("kind") == "subscription":
+            out["sub_cost"] += cost
+            out["sub_tok_in"] += tin; out["sub_tok_out"] += tout; out["sub_calls"] += 1
+            if is_today:
+                out["sub_today"] += cost
+            # area = the "(apply)" / "(pipeline)" suffix in the model label
+            area = "apply" if "(apply)" in model else "pipeline" if "(pipeline)" in model else "other"
+            a = out["sub_by_area"].setdefault(area, {"cost": 0.0, "in": 0, "out": 0, "calls": 0})
+            a["cost"] += cost; a["in"] += tin; a["out"] += tout; a["calls"] += 1
+        else:
+            out["cost"] += cost
+            if is_today:
+                out["today"] += cost
     return out
 
 
