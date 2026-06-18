@@ -297,14 +297,32 @@ def _setup_searches() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_ai_features() -> None:
-    """Ask about AI scoring/tailoring — optional LLM configuration."""
-    console.print(Panel(
+    """Ask about AI scoring/tailoring — optional LLM configuration.
+
+    If the Claude Code CLI is installed it already powers every AI stage from
+    the user's subscription, so we default to skipping API-key entry.
+    """
+    has_claude = shutil.which("claude") is not None
+
+    intro = (
         "[bold]Step 4: AI Features (optional)[/bold]\n"
         "An LLM powers job scoring, resume tailoring, and cover letters.\n"
         "Without this, you can still discover and enrich jobs."
-    ))
+    )
+    if has_claude:
+        intro += (
+            "\n\n[green]✓ Claude Code CLI detected[/green] — your Claude subscription "
+            "already powers every AI stage, no API key needed.\n"
+            "You can skip this step, or set up a different provider instead."
+        )
+    console.print(Panel(intro))
 
-    if not Confirm.ask("Enable AI scoring and resume tailoring?", default=True):
+    if has_claude:
+        # Claude already covers the AI stages; only continue if the user wants an alternative.
+        if not Confirm.ask("Use a different provider instead of your Claude subscription?", default=False):
+            console.print("[dim]Using your Claude Code subscription for scoring, tailoring, and cover letters.[/dim]")
+            return
+    elif not Confirm.ask("Enable AI scoring and resume tailoring?", default=True):
         console.print("[dim]Discovery-only mode. You can configure AI later with [bold]applypilot init[/bold].[/dim]")
         return
 
