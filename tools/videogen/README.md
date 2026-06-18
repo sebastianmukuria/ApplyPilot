@@ -9,8 +9,10 @@ narration → edit → visual self-review) are exactly what this does.
 
 ## What it does
 
-1. **narrate** — macOS `say` renders each scene's narration to audio; its
-   duration drives the scene length.
+1. **narrate** — your ElevenLabs cloned voice (if configured) or macOS `say`
+   renders each scene's narration to audio; its duration drives the scene
+   length. Per-scene generation keeps every clip short, so the voice never
+   drifts.
 2. **render** — Playwright loads `scenes/scene.html` (a universal GSAP scene in
    the Flight Deck visual language) and screen-records each scene.
 3. **mux** — FFmpeg lays the narration under the animation with a lead-in.
@@ -43,15 +45,33 @@ animated layout. Edit copy, reorder, add scenes, then re-run. Scene kinds:
 | `feature` | headline + sub + colored "pill" chips |
 | `shot` | a real UI screenshot with a slow ken-burns + caption |
 
-`shot` scenes use PNGs in `assets/shots/` — capture fresh ones from the live
-app (any Playwright screenshot at ~1440×900 works).
+`shot` scenes use PNGs in `assets/shots/`. Capture fresh ones from the live app
+with `python capture_shots.py` (tours every tab + settings at 2× while the app
+runs on `127.0.0.1:8765`), or drop in any ~1440×900 screenshot. The label band
+(eyebrow · title · sub) renders on clean canvas *above* the screenshot, so it
+never overlaps the app's own UI text.
 
-The narration voice is macOS `say` ("Samantha" by default — change `VOICE` in
-`build.py`). For higher-quality narration, install a Premium voice in
-System Settings → Accessibility → Spoken Content, or swap in a cloud TTS.
+### Narration voice
 
-## Not included (needs your own accounts)
+By default narration is macOS `say` ("Samantha" — change `VOICE` in `build.py`),
+which needs no account. To narrate in **your own ElevenLabs cloned voice**, set
+these in `~/.applypilot/.env` (gitignored, never committed):
 
-A cloned voice (ElevenLabs) and a talking-head avatar (HeyGen) — those train on
-your real voice/face and run through paid APIs. This pipeline is the
-account-free path: animated motion graphics + local narration.
+```
+ELEVENLABS_API_KEY=sk_...          # key needs Text-to-Speech + Voices-Read scopes
+ELEVENLABS_VOICE_ID=...            # your cloned voice's id
+ELEVENLABS_STABILITY=0.5           # optional — lower = more expressive
+ELEVENLABS_STYLE=0.4               # optional — higher = more energy/inflection
+ELEVENLABS_SIMILARITY=0.85         # optional — closeness to your clone
+```
+
+The build prints which voice it's using before spending any credits, and
+`NARRATION_SPEED` in `build.py` (default `1.1`) sets the overall pace. ElevenLabs
+draws from your subscription's monthly credits — a full run is ~1k characters.
+
+## Not included (needs your own account/hardware)
+
+A talking-head avatar (HeyGen and similar) — that trains on your real face and
+runs through a paid API. This pipeline covers everything else: script, motion
+graphics, narration (local or your cloned voice), editing, and visual
+self-review.

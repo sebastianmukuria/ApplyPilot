@@ -1,8 +1,9 @@
 """The ApplyPilot demo — script as data.
 
-This is the "script" the pipeline turns into a video. Each scene carries the
-narration (which also drives its length) and an animated layout. Edit freely
-and re-run build.py; swap kinds, reorder, rewrite copy.
+A tab-by-tab product walkthrough: Deck → Queue → auto-apply → Intel →
+Answers → Settings → the engine. Each scene carries the narration (which
+also drives its length) and an animated layout. Edit freely and re-run
+build.py; swap kinds, reorder, rewrite copy.
 
 kinds: title | statement | funnel | feature | shot
 """
@@ -14,60 +15,71 @@ STORYBOARD = [
         "kind": "title",
         "eyebrow": "Application autopilot",
         "title": "ApplyPilot",
-        "sub": "The job hunt, on autopilot — running entirely on your own machine.",
-        "narration": "This is ApplyPilot. An autonomous job-search co-pilot that runs entirely on your own computer.",
-        "caption": "ApplyPilot — the job hunt on autopilot.",
+        "sub": "An autonomous job-search co-pilot — a quick tour.",
+        "narration": "This is ApplyPilot, an autonomous job-search co-pilot that runs entirely on your own machine. Let me walk you through it.",
+        "caption": "ApplyPilot — a quick walkthrough.",
     },
     {
         "kind": "statement",
-        "eyebrow": "The problem",
+        "eyebrow": "Why",
         "title": "Applying is a numbers game that eats your life.",
-        "size": 58,
-        "sub": "Hundreds of postings. Each one a form, a résumé tweak, a cover letter.",
-        "narration": "Applying to jobs is a numbers game that eats your life. Hundreds of postings, each one a form to fill, a résumé to tweak, a cover letter to write.",
-        "caption": "Applying is a numbers game that eats your life.",
+        "size": 56,
+        "sub": "ApplyPilot turns the whole funnel into one dashboard.",
+        "narration": "Applying is a numbers game that eats your life. ApplyPilot turns the whole funnel into one dashboard.",
+        "caption": "The whole job hunt, in one place.",
     },
     {
-        "kind": "funnel",
-        "eyebrow": "Discover & score",
-        "title": "It reads every posting and scores the fit — 1 to 10.",
-        "cells": [
-            {"label": "Discovered", "value": 5241},
-            {"label": "Scored", "value": 619},
-            {"label": "Strong", "value": 234},
-            {"label": "Docs ready", "value": 160},
-        ],
-        "narration": "It scans the job boards, reads every posting, and scores each one against your résumé, so you only ever look at the jobs worth your time.",
-        "caption": "Scans the boards, scores every job against your résumé.",
+        "kind": "shot",
+        "image": f"{SHOTS}/deck.png",
+        "eyebrow": "The Deck",
+        "title": "Your command center.",
+        "sub": "A live funnel, up to three runs at once, and real-time Claude usage.",
+        "narration": "This is the Deck, your command center. A live funnel tracks every job from discovered, to scored, to strong matches, to applied, and you can click any number to jump straight to those jobs. It runs up to three applications at the same time, streaming each one live, and a usage tracker shows exactly what Claude is doing.",
     },
     {
         "kind": "shot",
         "image": f"{SHOTS}/queue.png",
-        "eyebrow": "Tailored, per job",
-        "title": "Résumé + cover letter, written for each role.",
-        "narration": "For the strong matches, it tailors a résumé and writes a cover letter — for every single job.",
-        "caption": "Tailors a résumé and writes a cover letter for each job.",
+        "eyebrow": "The Queue",
+        "title": "Every job, scored against your résumé.",
+        "sub": "Filter and sort, then preview the tailored résumé and cover letter per role.",
+        "narration": "The Queue is the job board. Every posting is scored one to ten against your résumé, so you only see roles worth your time. Expand any card to see why it scored that way, and preview the résumé and cover letter it tailored for that exact job.",
     },
     {
         "kind": "feature",
         "eyebrow": "Supervised auto-apply",
-        "title": "It fills the application in a real browser.",
-        "sub": "And it never clicks Submit without you. It fills everything, pings your phone, and hands you the open window to review.",
+        "title": "It fills everything. You stay in control.",
+        "sub": "It opens a real Chrome window and fills the whole application — but you solve the CAPTCHA and you click submit.",
         "pills": [
-            {"text": "Fills every field", "color": "var(--sky)"},
-            {"text": "Solves CAPTCHAs with you", "color": "var(--clay)"},
-            {"text": "You approve & submit", "color": "var(--sage)"},
+            {"text": "You solve the CAPTCHA", "color": "var(--clay)"},
+            {"text": "You click submit", "color": "var(--sage)"},
+            {"text": "Stays within site ToS", "color": "var(--sky)"},
         ],
-        "narration": "Then it fills out the application in a real Chrome window. And it never clicks submit without you — it pings your phone, and hands you the browser to review and send.",
-        "caption": "Fills the form in a real browser. You approve before it submits.",
+        "narration": "Hit apply, and it opens a real Chrome window and fills out the entire application. But by design, it never solves the CAPTCHA, and it never clicks submit, you do. That keeps ApplyPilot within every site's terms of service, and it means you always get the final say before anything is sent.",
+        "caption": "Fills the form. You solve the CAPTCHA and click submit.",
     },
     {
         "kind": "shot",
         "image": f"{SHOTS}/intel.png",
-        "eyebrow": "Pipeline radar",
-        "title": "It watches your inbox and charts who replied.",
-        "narration": "It even watches your inbox — interviews, rejections, recruiter replies — and charts your real response rates.",
-        "caption": "Watches your inbox and charts your real response rates.",
+        "eyebrow": "Intel",
+        "title": "Your campaign, measured.",
+        "sub": "Inbox-tracked outcomes and response rates by score band.",
+        "narration": "Intel is your campaign analytics. It watches your inbox, read-only, just sender, subject, and date, to automatically log interview invites, rejections, and recruiter replies, then charts your applications per day, your pipeline from applied to offer, and your response rate by score band.",
+    },
+    {
+        "kind": "shot",
+        "image": f"{SHOTS}/answers.png",
+        "eyebrow": "Answers",
+        "title": "Truthful answers, on tap.",
+        "sub": "Drafted from a profile of your real projects and skills.",
+        "narration": "The Answers tab handles those open-ended application questions. It drafts truthful answers grounded in a profile of your real projects and skills, so you're never rewriting why do you want to work here for the hundredth time.",
+    },
+    {
+        "kind": "shot",
+        "image": f"{SHOTS}/settings.png",
+        "eyebrow": "Settings",
+        "title": "Tunable — no config files.",
+        "sub": "Model, salary, master résumé, alerts, and Gmail — all in the UI.",
+        "narration": "Everything's tunable in settings. Pick your Claude model, decide how to answer the salary question, lock in a master résumé, wire up Telegram or browser alerts, and connect Gmail, all without touching a config file.",
     },
     {
         "kind": "statement",

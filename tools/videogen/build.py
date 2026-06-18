@@ -22,10 +22,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+
+def _load_env() -> None:
+    """Pull ELEVENLABS_* (and any creds) from ~/.applypilot/.env into os.environ."""
+    env = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot")) / ".env"
+    if not env.exists():
+        return
+    for ln in env.read_text().splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and "=" in ln:
+            k, v = ln.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "out"
@@ -34,9 +47,15 @@ REVIEW = OUT / "review"
 SCENE_HTML = ROOT / "scenes" / "scene.html"
 
 W, H, FPS = 1280, 720, 30
-VOICE = "Samantha"
-LEAD_IN = 0.45   # animation runs this long before narration starts
-TAIL = 0.7       # hold after narration ends
+VOICE = "Samantha"          # macOS `say` fallback voice
+LEAD_IN = 0.4    # animation runs this long before narration starts
+TAIL = 0.6       # hold after narration ends
+NARRATION_SPEED = 1.1  # >1 speeds narration (pitch-preserving); drives scene length too
+
+# ElevenLabs: set ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID (your cloned voice)
+# in ~/.applypilot/.env and narration uses your real voice. Per-scene
+# generation keeps every clip short, so the voice never drifts.
+EL_MODEL = "eleven_multilingual_v2"
 
 
 def sh(cmd, **kw):
@@ -48,12 +67,68 @@ def ffprobe_duration(path: Path) -> float:
                      "-of", "csv=p=0", str(path)]).stdout.strip())
 
 
+def _clean_for_tts(text: str) -> str:
+    """Strip punctuation that makes expressive TTS hallucinate filler ("uhh").
+
+    Em/en-dashes and ellipses create long hanging pauses the model tends to
+    fill with breaths and stammers; turn them into clean comma/period beats.
+    """
+    import re
+    t = re.sub(r"\s*[—–]\s*", ", ", text)              # em / en dash -> comma beat
+    t = re.sub(r"\s*(\.\.\.|…)\s*", ". ", t)           # ellipsis -> full stop
+    t = re.sub(r"\s+-\s+", ", ", t)                    # spaced hyphen -> comma
+    t = re.sub(r"\s+([,.])", r"\1", t)                 # no space before comma/period
+    t = re.sub(r"\s*,\s*,\s*", ", ", t)                # collapse doubled commas
+    t = re.sub(r"\s{2,}", " ", t).strip()              # collapse whitespace
+    return t
+
+
+def _eleven_narrate(text: str, dst: Path, key: str, voice_id: str) -> float:
+    """Generate narration with the user's ElevenLabs cloned voice.
+
+    Expressiveness knobs (override in ~/.applypilot/.env):
+      ELEVENLABS_STABILITY  lower = more emotional variation (default 0.40)
+      ELEVENLABS_STYLE      higher = more energy/inflection   (default 0.5)
+      ELEVENLABS_SIMILARITY closeness to your clone           (default 0.85)
+    """
+    import httpx
+    def _f(name, default):
+        try:
+            return float(os.environ.get(name, default))
+        except ValueError:
+            return default
+    resp = httpx.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        headers={"xi-api-key": key, "accept": "audio/mpeg", "content-type": "application/json"},
+        json={"text": _clean_for_tts(text), "model_id": EL_MODEL,
+              "voice_settings": {"stability": _f("ELEVENLABS_STABILITY", 0.40),
+                                 "similarity_boost": _f("ELEVENLABS_SIMILARITY", 0.85),
+                                 "style": _f("ELEVENLABS_STYLE", 0.5),
+                                 "use_speaker_boost": True}},
+        timeout=120,
+    )
+    if resp.status_code != 200:
+        # surface the API message (never the key) so failures are debuggable
+        raise RuntimeError(f"ElevenLabs {resp.status_code}: {resp.text[:200]}")
+    mp3 = dst.with_suffix(".mp3")
+    mp3.write_bytes(resp.content)
+    sh(["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp3),
+        "-filter:a", f"atempo={NARRATION_SPEED}", "-c:a", "aac", "-b:a", "160k", str(dst)])
+    mp3.unlink(missing_ok=True)
+    return ffprobe_duration(dst)
+
+
 def narrate(text: str, dst: Path, rate: int = 178) -> float:
-    """Render narration to m4a via `say`; return its duration in seconds."""
+    """Render narration to m4a; return its duration. Uses the ElevenLabs cloned
+    voice when configured, else falls back to macOS `say`."""
+    key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    voice_id = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+    if key and voice_id:
+        return _eleven_narrate(text, dst, key, voice_id)
     aiff = dst.with_suffix(".aiff")
     sh(["say", "-v", VOICE, "-r", str(rate), "-o", str(aiff), text])
     sh(["ffmpeg", "-y", "-loglevel", "error", "-i", str(aiff),
-        "-c:a", "aac", "-b:a", "160k", str(dst)])
+        "-filter:a", f"atempo={NARRATION_SPEED}", "-c:a", "aac", "-b:a", "160k", str(dst)])
     aiff.unlink(missing_ok=True)
     return ffprobe_duration(dst)
 
@@ -148,6 +223,9 @@ def main():
     ap.add_argument("--review-only", action="store_true")
     ap.add_argument("--name", default="applypilot_demo")
     args = ap.parse_args()
+    _load_env()
+    voice = "ElevenLabs clone" if os.environ.get("ELEVENLABS_VOICE_ID") else f"macOS say ({VOICE})"
+    print(f"narration: {voice}\n")
 
     import importlib
     sb = importlib.import_module(args.storyboard).STORYBOARD

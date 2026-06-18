@@ -50,11 +50,14 @@
   .pill { font-family:'Geist'; font-size:16px; color:var(--mut); padding:12px 20px;
     border-radius:999px; border:1px solid rgba(255,255,255,.1); background:rgba(255,255,255,.02); }
   .pill .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:9px; vertical-align:1px; }
-  /* screenshot framing */
-  .shot { position:absolute; inset:0; z-index:5; display:flex; align-items:center; justify-content:center; }
-  .shot img { width:1100px; border-radius:18px; box-shadow:0 30px 90px rgba(0,0,0,.6);
-    outline:1px solid rgba(255,255,255,.08); }
-  .shotcap { position:fixed; top:64px; left:120px; z-index:30; }
+  /* screenshot framing: label band on clean canvas above, screenshot below */
+  .shot { position:absolute; inset:0; z-index:5; display:flex; flex-direction:column;
+    padding:30px 68px 30px; }
+  .shot-head { flex:0 0 auto; margin-bottom:16px; }
+  .shot-head .eyebrow { margin-bottom:9px; }
+  .shot-frame { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; }
+  .shot-frame img { max-width:100%; max-height:100%; border-radius:14px;
+    box-shadow:0 30px 90px rgba(0,0,0,.6); outline:1px solid rgba(255,255,255,.08); }
   /* progress ticks (scene position) */
   .ticks { position:fixed; bottom:26px; left:50%; transform:translateX(-50%); z-index:40; display:flex; gap:6px; }
   .tick { width:22px; height:3px; border-radius:3px; background:rgba(255,255,255,.14); }
@@ -149,17 +152,20 @@
 
     } else if (S.kind === 'shot') {
       const wrap = el('div', 'shot');
-      const img = document.createElement('img'); img.src = S.image; wrap.appendChild(img);
+      const head = el('div', 'shot-head');
+      if (S.eyebrow) head.appendChild(el('div', 'eyebrow', S.eyebrow));
+      if (S.title) { const t = el('div', 'display', S.title); t.style.fontSize = '36px'; head.appendChild(t); }
+      if (S.sub) { const s = el('div', 'sub', S.sub); s.style.fontSize = '18px'; s.style.marginTop = '6px'; head.appendChild(s); }
+      wrap.appendChild(head);
+      const frame = el('div', 'shot-frame');
+      const img = document.createElement('img'); img.src = S.image; frame.appendChild(img);
+      wrap.appendChild(frame);
       document.body.insertBefore(wrap, document.getElementById('stage'));
-      if (S.eyebrow) {
-        const c = el('div', 'shotcap');
-        c.appendChild(el('div', 'eyebrow', S.eyebrow));
-        if (S.title) { const t = el('div', 'display', S.title); t.style.fontSize = '34px'; c.appendChild(t); }
-        document.body.appendChild(c);
-        tl.from('.shotcap', { y: 18, opacity: 0, duration: .6, ease }, '+=.1');
-      }
-      tl.from('.shot img', { scale: 1.06, opacity: 0, duration: 1.0, ease }, 0)
-        .to('.shot img', { scale: 1.0, duration: (C.duration), ease: 'none' }, 0); // slow ken-burns
+      tl.from('.shot-head .eyebrow', { y: 16, opacity: 0, duration: .5, ease }, .1)
+        .from('.shot-head .display', { y: 20, opacity: 0, filter: 'blur(6px)', duration: .6, ease }, '-=.25')
+        .from('.shot-head .sub', { y: 14, opacity: 0, duration: .5, ease }, '-=.3');
+      tl.from('.shot-frame img', { scale: 1.05, opacity: 0, duration: 1.0, ease }, 0)
+        .to('.shot-frame img', { scale: 1.0, duration: (C.duration), ease: 'none' }, 0); // slow ken-burns
     }
 
     // caption fade in/out across the scene
