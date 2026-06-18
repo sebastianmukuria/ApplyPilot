@@ -33,7 +33,7 @@ you** and handing you the open browser for the final Submit.
 
 ## What It Does
 
-ApplyPilot is a 6-stage autonomous job application pipeline. It discovers jobs across 5+ boards, scores them against your resume with AI, tailors your resume per job, writes cover letters, and **submits applications for you**. It navigates forms, uploads documents, answers screening questions, all hands-free.
+ApplyPilot is a 6-stage autonomous job-application pipeline. It discovers jobs across 5+ boards, scores them against your résumé with AI, tailors your résumé per job, writes cover letters, and fills out the applications in a real browser. **Supervised by default**, it does everything — navigates forms, uploads documents, answers screening questions — up to the final click, then hands you the browser to review and Submit (set `APPLYPILOT_SUPERVISED=0` to let it submit on its own).
 
 Install with one line (macOS / Linux):
 
@@ -54,7 +54,7 @@ playwright install chromium   # the headless browser used by enrich, smart-extra
 Then:
 
 ```bash
-applypilot init          # one-time setup: resume, profile, preferences, API keys
+applypilot init          # one-time setup: résumé, profile, searches (AI provider optional)
 applypilot doctor        # verify your setup — shows what's installed and what's missing
 applypilot run           # discover > enrich > score > tailor > cover letters
 applypilot run -w 4      # same but parallel (4 threads for discovery/enrichment)
@@ -106,14 +106,14 @@ own pace.
 ## Two Paths
 
 ### Full Pipeline (recommended)
-**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), Claude Code CLI, Chrome
+**Requires:** Python 3.11+, Node.js (for npx), Claude Code CLI, Chrome — **no API keys** (a Claude Code subscription powers every stage). Gemini/OpenAI keys work as fallbacks if you don't use the Claude CLI.
 
-Runs all 6 stages, from job discovery to autonomous application submission. This is the full power of ApplyPilot.
+Runs all 6 stages, from job discovery to supervised application filling. This is the full power of ApplyPilot.
 
 ### Discovery + Tailoring Only
-**Requires:** Python 3.11+, Gemini API key (free)
+**Requires:** Python 3.11+, and one LLM provider — the Claude Code CLI (no key) **or** a Gemini/OpenAI API key.
 
-Runs stages 1-5: discovers jobs, scores them, tailors your resume, generates cover letters. You submit applications manually with the AI-prepared materials.
+Runs stages 1-5: discovers jobs, scores them, tailors your résumé, generates cover letters. You submit applications manually with the AI-prepared materials.
 
 ---
 
@@ -152,11 +152,11 @@ Each stage is independent. Run them all or pick what you need.
 | Python 3.11+ | Everything | Core runtime |
 | Playwright Chromium | Enrich, smart-extract, PDF | `playwright install chromium` after pip install (not bundled) |
 | Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
-| Gemini API key | Scoring, tailoring, cover letters | Free tier (15 RPM / 1M tokens/day) is enough |
+| **Claude Code CLI** | The whole pipeline — scoring, tailoring, covers, auto-apply | A Claude subscription runs everything with **no API keys**. Install from [claude.ai/code](https://claude.ai/code) |
+| LLM API key (optional) | Alternative provider for the AI stages | Not needed with the Claude CLI. Gemini free tier (15 RPM / 1M tokens/day), OpenAI, or local (Ollama/llama.cpp via `LLM_URL`) |
 | Chrome/Chromium | Auto-apply | Auto-detected on most systems |
-| Claude Code CLI | Auto-apply | Install from [claude.ai/code](https://claude.ai/code) |
 
-**Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI and local models (Ollama/llama.cpp) are also supported.
+**No API keys needed with a Claude Code subscription** — it powers every AI stage. Prefer keys instead? The free Gemini tier ([aistudio.google.com](https://aistudio.google.com)), OpenAI, and local models (Ollama/llama.cpp) all work as alternatives.
 
 ### Optional
 
@@ -180,7 +180,7 @@ Your personal data in one structured file: contact info, work authorization, com
 Job search queries, target titles, locations, boards. Run multiple searches with different parameters.
 
 ### `.env`
-API keys and runtime config: `GEMINI_API_KEY`, `LLM_MODEL`, `CAPSOLVER_API_KEY` (optional).
+Runtime config — **API keys are optional with a Claude Code subscription** (it needs none). To use a different provider instead, set one of `GEMINI_API_KEY` / `OPENAI_API_KEY` / `LLM_URL` (local). Other knobs: `LLM_MODEL` (provider model override), `APPLYPILOT_CLAUDE_MODEL` (Claude model, default `haiku`), `CAPSOLVER_API_KEY` (optional CAPTCHA solving).
 
 ### Package configs (shipped with ApplyPilot)
 - `config/employers.yaml` - Workday employer registry (48 preconfigured)
